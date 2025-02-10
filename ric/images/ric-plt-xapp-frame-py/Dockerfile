@@ -60,6 +60,9 @@ ENV LD_LIBRARY_PATH=/lib:/usr/lib:/usr/local/lib
 RUN chmod +x /opt/e2/rmr_probe
 
 
+RUN pip3 install prometheus_client
+
+
 WORKDIR /opt/xApps
 
 CMD ["/bin/bash"]
