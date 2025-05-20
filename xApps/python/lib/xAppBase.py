@@ -3,6 +3,7 @@ import time
 import json
 import logging
 import threading
+import queue
 
 import ricxappframe
 from ricxappframe.xapp_frame import rmr
@@ -65,6 +66,9 @@ class xAppBase(object):
         if self.subscriber.ResponseHandler(self._subscription_response_callback, self.httpServer) is not True:
             print("Error when trying to set the subscription reponse callback")
         self.httpServer.start()
+        
+        self.ack_queue = queue.Queue()
+
 
     @classmethod
     def start_function(cls, fun):
@@ -180,8 +184,10 @@ class xAppBase(object):
                         pass
                 if (summary['message type'] == 12041):
                     print("Received RIC_CONTROL_ACK")
+                    self.ack_queue.put("SUCCESS")
                 if (summary['message type'] == 12042):
                     print("Received RIC_CONTROL_FAILURE")
+                    self.ack_queue.put("FAILURE")
 
             rmr.rmr_free_msg(sbuf)
 

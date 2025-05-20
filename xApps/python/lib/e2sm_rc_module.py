@@ -7,7 +7,7 @@ class e2sm_rc_module(object):
     def __init__(self, parent):
         super(e2sm_rc_module, self).__init__()
         self.parent = parent
-        self.ran_func_id = 3;
+        self.ran_func_id = 3
         self.e2sm_rc_compiler = e2sm_rc_packer()
 
         # helper variables
@@ -38,10 +38,9 @@ class e2sm_rc_module(object):
         payload = bytes(hex_num for hex_num in msg)
         return payload
 
-    def send_control_request_style_2_action_6(self, e2_node_id, ue_id, min_prb_ratio, max_prb_ratio, dedicated_prb_ratio, ack_request=1):
+    def send_control_request_style_2_action_6(self, e2_node_id, ue_id, min_prb_ratio, max_prb_ratio, ack_request=1, sst=1, sd=1):
         plmn_string = "00101"
-        sst = 1
-        sd = 1
+
 
         # PLMN encoding
         PLMN = plmn_string_to_bcd(plmn_string)
@@ -53,7 +52,7 @@ class e2sm_rc_module(object):
         # PRB ratio limits, i.e., [0-100]
         min_prb_ratio = max(0, min(min_prb_ratio, 100))
         max_prb_ratio = max(0, min(max_prb_ratio, 100))
-        dedicated_prb_ratio = max(0, min(dedicated_prb_ratio, 100))
+        dedicated_prb_ratio = 0
 
         if (max_prb_ratio < min_prb_ratio):
             print("ERROR: E2SM-RC Control Request - Slice Level PRB Quota: max_prb_ratio ({}) cannot be smaller than min_prb_ratio ({})".format(max_prb_ratio, min_prb_ratio))
@@ -88,8 +87,8 @@ class e2sm_rc_module(object):
                                             {'ranParameter-ID': 11, 'ranParameter-valueType': ('ranP-Choice-ElementFalse', {'ranParameter-value': ('valueInt', min_prb_ratio)})},
                                             #>>Max PRB Policy Ratio, ELEMENT
                                             {'ranParameter-ID': 12, 'ranParameter-valueType': ('ranP-Choice-ElementFalse', {'ranParameter-value': ('valueInt', max_prb_ratio)})},
-                                            #>>Dedicated PRB Policy Ratio, ELEMENT
-                                            {'ranParameter-ID': 13, 'ranParameter-valueType': ('ranP-Choice-ElementFalse', {'ranParameter-value': ('valueInt', dedicated_prb_ratio)})}
+                                            # #>>Dedicated PRB Policy Ratio, ELEMENT
+                                            # {'ranParameter-ID': 13, 'ranParameter-valueType': ('ranP-Choice-ElementFalse', {'ranParameter-value': ('valueInt', dedicated_prb_ratio)})}
                                         ]}})}
                                     ]}]}})}
                                 ]}

@@ -4,6 +4,8 @@ import time
 import datetime
 import argparse
 import signal
+import socketserver
+import threading
 from lib.xAppBase import xAppBase
 
 class MyXapp(xAppBase):
@@ -20,22 +22,43 @@ class MyXapp(xAppBase):
             max_prb_ratio = 5
             current_time = datetime.datetime.now()
             print("{} Send RIC Control Request to E2 node ID: {} for UE ID: {}, PRB_min_ratio: {}, PRB_max_ratio: {}".format(current_time.strftime("%H:%M:%S"), e2_node_id, ue_id, min_prb_ratio, max_prb_ratio))
-            self.e2sm_rc.control_slice_level_prb_quota(e2_node_id, ue_id, min_prb_ratio, max_prb_ratio, dedicated_prb_ratio=100, ack_request=1)
-            time.sleep(5)
+            self.e2sm_rc.control_slice_level_prb_quota(e2_node_id, ue_id, min_prb_ratio, max_prb_ratio, ack_request=1)
+            time.sleep(10)
 
             min_prb_ratio = 1
             max_prb_ratio = 40
             current_time = datetime.datetime.now()
             print("{} Send RIC Control Request to E2 node ID: {} for UE ID: {}, PRB_min_ratio: {}, PRB_max_ratio: {}".format(current_time.strftime("%H:%M:%S"), e2_node_id, ue_id, min_prb_ratio, max_prb_ratio))
-            self.e2sm_rc.control_slice_level_prb_quota(e2_node_id, ue_id, min_prb_ratio, max_prb_ratio, dedicated_prb_ratio=100, ack_request=1)
-            time.sleep(5)
+            self.e2sm_rc.control_slice_level_prb_quota(e2_node_id, ue_id, min_prb_ratio, max_prb_ratio, ack_request=1)
+            time.sleep(10)
 
             min_prb_ratio = 1
             max_prb_ratio = 100
             current_time = datetime.datetime.now()
             print("{} Send RIC Control Request to E2 node ID: {} for UE ID: {}, PRB_min_ratio: {}, PRB_max_ratio: {}".format(current_time.strftime("%H:%M:%S"), e2_node_id, ue_id, min_prb_ratio, max_prb_ratio))
-            self.e2sm_rc.control_slice_level_prb_quota(e2_node_id, ue_id, min_prb_ratio, max_prb_ratio, dedicated_prb_ratio=100, ack_request=1)
-            time.sleep(5)
+            self.e2sm_rc.control_slice_level_prb_quota(e2_node_id, ue_id, min_prb_ratio, max_prb_ratio, ack_request=1)
+            time.sleep(10)
+
+class UEIDRequestHandler(socketserver.BaseRequestHandler):
+    def handle(self):
+        data = self.request.recv(1024).strip().decode("utf-8")
+        print(f"Received request for slice: {data}")
+        response = SLICE_DATA.get(data, [])
+        self.request.sendall(str(response).encode("utf-8"))
+
+class ThreadedServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    daemon_threads = True  # Ensure threads exit when main program exits
+    allow_reuse_address = True
+
+def run_server(host="0.0.0.0", port=5000):
+    with ThreadedServer((host, port), UEIDRequestHandler) as server:
+        print(f"Server running on {host}:{port}")
+        server.serve_forever()
+
+def start_server_in_thread(host="0.0.0.0", port=5000):
+    server_thread = threading.Thread(target=run_server, args=(host, port), daemon=True)
+    server_thread.start()
+    return server_thread
 
 
 if __name__ == '__main__':

@@ -61,6 +61,7 @@ RUN chmod +x /opt/e2/rmr_probe
 
 
 RUN pip3 install prometheus_client
+RUN pip3 install pyyaml
 
 
 WORKDIR /opt/xApps

@@ -1,0 +1,5 @@
+slice_config:
+  - sst_sd: [1, 1]
+    prb_min_max: [10, 1, 10]
+  - sst_sd: [2, 2]
+    prb_min_max: [10, 1, 30]

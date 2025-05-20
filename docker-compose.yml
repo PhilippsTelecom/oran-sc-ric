@@ -206,6 +206,10 @@ services:
       - type: bind
         source: ./monitoring/prometheus.yml
         target: /etc/prometheus/prometheus.yml
+
+      - type: bind
+        source: ./prometheus-data
+        target: /prometheus
     networks:
       ric_network:
         ipv4_address: ${PROM_IP}
@@ -217,6 +221,11 @@ services:
      - "3000:3000/tcp"
     env_file:
       - .env
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_DASHBOARDS_MIN_REFRESH_INTERVAL=1s
+    volumes:
+      - ./grafana-data:/var/lib/grafana
     networks:
       ric_network:
         ipv4_address: ${GRAFANA_IP}

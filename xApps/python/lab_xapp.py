@@ -6,12 +6,18 @@ import typing
 from lib.xAppBase import xAppBase
 from prometheus_client import start_http_server, Gauge
 import traceback
+import time
+import threading
+import socketserver
+from functools import partial
 
 
 class Lab_xApp(xAppBase):
     def __init__(self, config, http_server_port, rmr_port):
         super(Lab_xApp, self).__init__(config, http_server_port, rmr_port)
         self.setup_prometheus_metrics()
+        threading.Thread(target=self.old_labels_removal_thread).start()
+
 
     def translate_metric_name(self, metric_name):
         return metric_name.replace(".", "_")
@@ -20,7 +26,7 @@ class Lab_xApp(xAppBase):
         start_http_server(8000)
         self.metrics = {
             "CQI": Gauge("CQI", "Channel Quality Indicator (0-15)", ["ue_id", "nssai"]),
-            "RSRP": Gauge("RSRP", "Reference Signal Received Power (dBm)", ["ue_id", "nssai"]),
+            "RSRP": Gauge("RSRP", "Reference Signal Received Power (dBm)", ["ue_id", "nssai", ]),
             "RSRQ": Gauge("RSRQ", "Reference Signal Received Quality (dB)", ["ue_id", "nssai"]),
             "RRU.PrbAvailDl": Gauge(self.translate_metric_name("RRU.PrbAvailDl"), "PRB Available Downlink", ["ue_id", "nssai"]),
             "RRU.PrbAvailUl": Gauge(self.translate_metric_name("RRU.PrbAvailUl"), "PRB Available Uplink", ["ue_id", "nssai"]),
@@ -40,29 +46,65 @@ class Lab_xApp(xAppBase):
             "RACH.PreambleDedCell": Gauge(self.translate_metric_name("RACH.PreambleDedCell"), "Preamble Dedicated Cell", ["ue_id", "nssai"]),
         }
 
+        self.metric_labels = {}
+        self.label_metrics = {}
+        self.label_timeout = 5
+
     def update_metrics(self, user_metrics: typing.Dict[typing.AnyStr, typing.Dict[typing.AnyStr, float]]):
+        current_metric_labels = []
         for ue_id, ue_metrics in user_metrics.items():
-            print(ue_metrics.keys())
-            nssai = ue_metrics.pop("PASHM")
-            print("slice id is ", nssai)
+            nssai = ue_metrics.pop("SD")
+            if nssai is None:
+                print(f"Warning: received None for nssai value of ue_id: {ue_id}  ")
+                continue
+            rnti = ue_metrics.pop("RNTI")
+            print(f"ue_id: {ue_id}, nssai: {nssai}")
             for metric_name, value in ue_metrics.items():
-                print(ue_id, metric_name, value)
+                current_metric_labels.append((ue_id, nssai, rnti, metric_name))
                 self.metrics[metric_name].labels(ue_id=ue_id, nssai=nssai).set(value)
+
+        self.update_metric_labels(current_metric_labels)
+
+    def update_metric_labels(self, current_metric_labels):
+        now = time.time()
+        for metric_label in current_metric_labels:
+            self.metric_labels[metric_label] = now
+
+    def old_labels_removal_thread(self):
+        while True:
+            self.remove_old_labels()
+            time.sleep(1)
+
+    def remove_old_labels(self):
+        now = time.time()
+
+        def is_metric_label_item_old(metric_label_item):
+            _, timestamp = metric_label_item
+            return now - timestamp > self.label_timeout
+
+        old_metric_labels = list(filter(is_metric_label_item_old, self.metric_labels.items()))
+        for metric_label, timestamp in old_metric_labels:
+            label = metric_label[:2]
+            metric_name = metric_label[-1]
+            print(f"removing label {label} for {metric_label} by timestamp {timestamp}")
+            self.metric_labels.pop(metric_label)
+            self.metrics[metric_name].remove(*label)
 
 
     def my_subscription_callback(self, e2_agent_id, subscription_id, indication_hdr, indication_msg, ue_id):
-        print("\nRIC Indication Received from {} for Subscription ID: {}".format(e2_agent_id, subscription_id))
+        # print("\nRIC Indication Received from {} for Subscription ID: {}".format(e2_agent_id, subscription_id))
 
         indication_hdr = self.e2sm_kpm.extract_hdr_info(indication_hdr)
         meas_data = self.e2sm_kpm.extract_meas_data(indication_msg)
 
-        print("E2SM_KPM RIC Indication Content:")
-        print("-ColletStartTime: ", indication_hdr['colletStartTime'])
-        print("-Measurements Data:")
+        # print("E2SM_KPM RIC Indication Content:")
+        # print("-ColletStartTime: ", indication_hdr['colletStartTime'])
+        # print("-Measurements Data:")
 
         granulPeriod = meas_data.get("granulPeriod", None)
         if granulPeriod is not None:
-            print("-granulPeriod: {}".format(granulPeriod))
+            # print("-granulPeriod: {}".format(granulPeriod))
+            pass
 
         try:
             all_metrics = {}
@@ -71,7 +113,8 @@ class Lab_xApp(xAppBase):
                 ue_metrics = {}
                 granulPeriod = ue_meas_data.get("granulPeriod", None)
                 if granulPeriod is not None:
-                    print("---granulPeriod: {}".format(granulPeriod))
+                    pass
+                    # print("---granulPeriod: {}".format(granulPeriod))
 
                 for metric_name, value in ue_meas_data["measData"].items():
                     print("---Metric: {}, Value: {}".format(metric_name, value))
@@ -104,6 +147,43 @@ class Lab_xApp(xAppBase):
         self.e2sm_kpm.subscribe_report_service_style_4(e2_node_id, report_period, matchingUeConds, metric_names, granul_period, subscription_callback)
 
 
+    def get_rntis(self, slice_id):
+        rntis = set()
+        for (_, nssai, rnti, _)  in self.metric_labels.keys():
+            if int(slice_id) == int(nssai):
+                rntis.add(rnti)
+
+        return rntis
+
+
+class UEIDRequestHandler(socketserver.BaseRequestHandler):
+    def __init__(self, kpm, *args, **kwargs):
+        self.kpm = kpm
+        super().__init__(*args, **kwargs)
+
+    def handle(self):
+        data = self.request.recv(1024).strip().decode("utf-8")
+        # print(f"UEIDRequestHandler: Received request for slice: {data}")
+        response = self.kpm.get_rntis(data)
+        # print(f"UEIDRequestHandler: Received ue ids: {response}")
+        self.request.sendall(str(response).encode("utf-8"))
+
+class ThreadedServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    daemon_threads = True  # Ensure threads exit when main program exits
+    allow_reuse_address = True
+
+def run_server(myXapp, host="0.0.0.0", port=5000):
+    handler = partial(UEIDRequestHandler, myXapp)
+    with ThreadedServer((host, port), handler) as server:
+        print(f"Server running on {host}:{port}")
+        server.serve_forever()
+
+def start_server_in_thread(myXapp, host="0.0.0.0", port=5000):
+    server_thread = threading.Thread(target=run_server, args=(myXapp, host, port), daemon=True)
+    server_thread.start()
+    return server_thread
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='My example xApp')
     parser.add_argument("--config", type=str, default='', help="xApp config file path")
@@ -123,6 +203,8 @@ if __name__ == '__main__':
     myXapp = Lab_xApp(config, args.http_server_port, args.rmr_port)
     myXapp.e2sm_kpm.set_ran_func_id(ran_func_id)
 
+    thread = start_server_in_thread(myXapp)
+
     # Connect exit signals.
     signal.signal(signal.SIGQUIT, myXapp.signal_handler)
     signal.signal(signal.SIGTERM, myXapp.signal_handler)
@@ -131,3 +213,4 @@ if __name__ == '__main__':
     # Start xApp.
     myXapp.start(e2_node_id, metrics)
     # Note: xApp will unsubscribe all active subscriptions at exit.
+    thread.join()
