@@ -179,6 +179,29 @@ class e2sm_rc_module(object):
         payload = self._build_ric_control_request(control_header, control_msg, ack_request)
         self.parent.rmr_send(e2_node_id, payload, 12040, retries=1)
 
+    def send_control_request_style_1_action_1(self, e2_node_id, ue_id, drb_id=1, ecn_mark=0, ack_request=1):
+        # O-RAN.WG3.E2SM-RC-R003-v06.00.pdf / On page 207
+        # Style 1: "Radio Bearer Control"
+        # Action 1: "DRB QoS Configuration"
+       
+        # Handle Header
+        ue_id = ('gNB-DU-UEID', {'gNB-CU-UE-F1AP-ID': ue_id})
+        control_header = self.e2sm_rc_compiler.pack_ric_control_header_f1(style_type=1, control_action_id=1, ue_id_tuple=ue_id)
+
+        # We just put the DRB ID + ECN-mark parameter
+        control_msg_dict = {'ric-controlMessage-formats': ('controlMessage-Format1', 
+                                {'ranP-List': [  # SEQUENCE OF E2SM-RC-CONTROLMESSAGE-FORMAT1-ITEM
+                                    { 'ranParameter-ID': 1, 'ranParameter-valueType': ('ranP-Choice-ElementTrue', {'ranParameter-value': ('valueInt', drb_id)})},
+                                    { 'ranParameter-ID': 2, 'ranParameter-valueType': ('ranP-Choice-ElementFalse', {'ranParameter-value': ('valueInt', ecn_mark)}) }
+                                ]}
+        )}
+
+        # Preparing packet
+        control_msg = self.e2sm_rc_compiler.pack_ric_control_msg(control_msg_dict)
+        payload = self._build_ric_control_request(control_header, control_msg, ack_request)
+        self.parent.rmr_send(e2_node_id, payload, 12040, retries=1)
+
     # Alias with a nice name
     control_slice_level_prb_quota = send_control_request_style_2_action_6
     control_handover = send_control_request_style_3_action_1
+    control_drb_qos = send_control_request_style_1_action_1

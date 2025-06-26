@@ -60,6 +60,10 @@ ENV LD_LIBRARY_PATH=/lib:/usr/lib:/usr/local/lib
 RUN chmod +x /opt/e2/rmr_probe
 
 
+# Install libs for ML
+RUN pip install joblib keras==2.13.1 numpy tensorflow==2.13.1 scikit-learn pandas
+# uninstalled numpy keras
+
 WORKDIR /opt/xApps
 
 CMD ["/bin/bash"]

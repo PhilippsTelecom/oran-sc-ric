@@ -1,4 +1,4 @@
-version: '3.9'
+#version: '3.9'
 
 services:
   dbaas:
@@ -8,7 +8,7 @@ services:
     command: redis-server --loadmodule /usr/local/libexec/redismodule/libredismodule.so
     networks:
       ric_network:
-        ipv4_address: ${DBAAS_IP:-10.0.2.12}
+        ipv4_address: ${DBAAS_IP:-10.10.5.12}
 
   rtmgr_sim:
     container_name: ric_rtmgr_sim
@@ -38,7 +38,7 @@ services:
         target: /opt/config/uta-rtg.rt
     networks:
       ric_network:
-        ipv4_address: ${RTMGR_SIM_IP:-10.0.2.15}
+        ipv4_address: ${RTMGR_SIM_IP:-10.10.5.15}
 
   submgr:
     container_name: ric_submgr
@@ -66,7 +66,7 @@ services:
         target: /opt/config/submgr-uta-rtg.rt
     networks:
       ric_network:
-        ipv4_address: ${SUBMGR_IP:-10.0.2.13}
+        ipv4_address: ${SUBMGR_IP:-10.10.5.13}
 
   e2term:
     container_name: ric_e2term
@@ -95,7 +95,7 @@ services:
         target: /opt/e2/dockerRouter.txt
     networks:
       ric_network:
-        ipv4_address: ${E2TERM_IP:-10.0.2.10}
+        ipv4_address: ${E2TERM_IP:-10.10.5.10}
 
   appmgr:
     container_name: ric_appmgr
@@ -119,7 +119,7 @@ services:
         target: /opt/ric/config/appmgr.yaml
     networks:
       ric_network:
-        ipv4_address: ${APPMGR_IP:-10.0.2.14}
+        ipv4_address: ${APPMGR_IP:-10.10.5.14}
 
   e2mgr:
     container_name: ric_e2mgr
@@ -144,7 +144,7 @@ services:
         target: /opt/E2Manager/resources/configuration.yaml
     networks:
       ric_network:
-        ipv4_address: ${E2MGR_IP:-10.0.2.11}
+        ipv4_address: ${E2MGR_IP:-10.10.5.11}
 
   python_xapp_runner:
     container_name: python_xapp_runner
@@ -177,11 +177,12 @@ services:
       #  target: /opt/ric-plt-xapp-frame-py
     networks:
       ric_network:
-        ipv4_address: ${XAPP_PY_RUNNER_IP:-10.0.2.20}
+        ipv4_address: ${XAPP_PY_RUNNER_IP:-10.10.5.20}
 
 networks:
   ric_network:
+    driver: overlay
+    attachable: true
     ipam:
-      driver: default
       config:
-        - subnet: 10.0.2.0/24
+        - subnet: 10.10.5.0/24
