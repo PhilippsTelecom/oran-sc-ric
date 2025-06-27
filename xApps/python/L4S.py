@@ -4,6 +4,8 @@ from lib.xAppBase import xAppBase
 import signal
 import time
 import pandas as pd
+import numpy as np
+import math 
 # LOAD MODELS
 import joblib
 import keras # 2.13.1 (Must be same as Predict.py)
@@ -24,6 +26,11 @@ RRU_METRICS     = [
 MISC_METRICS    = [
     'CQI','RSRP','RSRQ','RACH.PreambleDedCell']
 ALL_METRICS     = DRB_METRICS + RRU_METRICS + MISC_METRICS 
+# PRE-PROCESSING
+METRICS_NAN_ZERO= ['CQI','DRB.RlcSduDelayDl','DRB.RlcDelayUl','DRB.AirIfDelayUl'] # METRICS WHERE NAN CAN BE REPLACED BY '0'
+METRICS_NAN_ZERO_DRB= list(set(DRB_METRICS) & set(METRICS_NAN_ZERO))
+METRICS_NAN_PREV= list(set(ALL_METRICS) - set(METRICS_NAN_ZERO)) # OTHER METRICS
+METRICS_NAN_PREV_DRB= list(set(DRB_METRICS) & set(METRICS_NAN_PREV))
 # RELATED TO PREDICTION
 METRIC_TO_PRED  = 'DRB.RlcSduDelayDl'
 COL_INDEX = ALL_METRICS.index(METRIC_TO_PRED)
@@ -55,7 +62,7 @@ class Get_Metrics(xAppBase):
         # L4S DRBs / KEY = UE_ID
         self.l4s_drb = {key: (pd.DataFrame(columns=ALL_METRICS),0) for key in L4S }
         # Aggregated DRBs / KEY = AGG_DRB
-        self.agg_drb = {key: (pd.DataFrame(columns=DRB_METRICS),0) for key in CONFIG.values()}
+        self.agg_drb = {key: (pd.DataFrame(columns=[ "%s-%d"%(metric,key) for metric in DRB_METRICS]),0) for key in CONFIG.values()}
 
     ################################ UTILS FOR PREDICTION ################################
 
@@ -77,7 +84,7 @@ class Get_Metrics(xAppBase):
         return dataF
 
 
-    # TAKE ALL NON-L4S DATAFRAMES, PUT IN RIGHT ORDER (cf INDEX) AND MERGE INTO A SINGLE ONE
+    # TAKE ALL DATAFRAMES, PUT IN RIGHT ORDER (cf INDEX) AND MERGE INTO A SINGLE ONE
     def Merge_agg_drb(self):
         Ret = pd.DataFrame()
         for aggregDRB in self.agg_drb.keys():
@@ -93,19 +100,55 @@ class Get_Metrics(xAppBase):
         return Ret
 
 
-    # PREDICT FOR SPECIFIC L4S DRB
-    def predict(self,ue_id,l4s_df,non_l4s_df):
+    # PRE-PROCESS DATA: HANDLES NAN, ETC. FOR AGGREGATED AND L4S DFs
+    def pre_process(self,dataFrame,replace_by_zero,replace_by_prev):
         
-        # CONCATENATE L4S + MERGED DF (NON-L4S)
-        X_df = pd.concat([l4s_df,non_l4s_df], axis = 1)
-        print(type(X_df))
-        print(X_df)
+        # Replace by 0
+        for mu in replace_by_zero: 
+            dataFrame[mu] = dataFrame[mu].fillna(0)
+            pass
+            
+        # Replace by prev
+        for mu in replace_by_prev: 
+            curr_ind=0
+            last_val=0
+            # BROWSE ALL ITS ROWS
+            for row in dataFrame[mu]:
+                if not math.isnan(row):# Not a NaN: save value
+                    last_val = row
+                else:# Have a NaN: retrieve last good value
+                    dataFrame[mu].iloc[curr_ind] = last_val
+                curr_ind+=1     
+       
+        # TYPE OF VALUES
+        dataFrame = dataFrame.astype(float)
+        return dataFrame
+
+
+    # PREDICT FOR SPECIFIC L4S DRB
+    def predict(self,ue_id,l4s_df,agg_df):
+
+        # PRE-PROCESS DATA
+        # > l4s
+        replace_by_zero = METRICS_NAN_ZERO
+        replace_by_prev = METRICS_NAN_PREV
+        l4s_df = self.pre_process(l4s_df,replace_by_zero,replace_by_prev)
+        # > agg
+        replace_by_zero = [ "%s-%d"%(measure,drb) for drb in self.agg_drb.keys() for measure in METRICS_NAN_ZERO_DRB ]
+        replace_by_prev = [ "%s-%d"%(measure,drb) for drb in self.agg_drb.keys() for measure in METRICS_NAN_PREV_DRB ]
+        agg_df = self.pre_process(agg_df,replace_by_zero,replace_by_prev)
+        
+        # CONCATENATE L4S + MERGED AGG DF 
+        X_df = pd.concat([l4s_df,agg_df], axis = 1)
 
         # PREDICT DELAY
-        l4s_delay = 0
-        # l4s_delay=self.model.predict(X_df)
-        # GET NORMAL DELAY
+        l4s_delay=self.model.predict(np.array([X_df]))
+        l4s_delay = l4s_delay[0][0]
+        print(l4s_delay)
+        # GET NORMAL DELAY (CF SCALER)
         l4s_delay = l4s_delay * (self.val_max - self.val_min) + self.val_min
+        print("[!] val_max = %f ; val_min = %f "%(self.val_max,self.val_min))
+        print("[!] Predicted Delay = %f "%l4s_delay)
 
         # COMPUTE PROBA
         if l4s_delay < TH_MIN:
@@ -117,7 +160,7 @@ class Get_Metrics(xAppBase):
         
         # SEND
         drb_id = 1
-        mark_prob = 100
+        mark_prob = 0
         self.e2sm_rc.control_drb_qos(CU_NODE_ID, ue_id,drb_id,mark_prob,ack_request=1)
 
 
@@ -129,17 +172,17 @@ class Get_Metrics(xAppBase):
         # RETURN VALUE
         ret = True
         # FEATURES (AGG_DRB)
-        index=0
+        drb_id=0
         list_agg_drb = list(self.agg_drb.keys())
         # BROWSE ALL FEATURES
-        while ret and (index < len(list_agg_drb)): 
-            nbRows = self.agg_drb[list_agg_drb[index]][0].shape[0]
+        while ret and (drb_id < len(list_agg_drb)): 
+            nbRows = self.agg_drb[list_agg_drb[drb_id]][0].shape[0]
             ret = (nbRows == WINDOW)
-            index = index + 1
+            drb_id = drb_id + 1
         return ret
 
 
-    # SAYS IF WE HAVE ENOUHG TEMPORAL WINDOWS FOR CURRENT 'L4S'
+    # SAYS IF WE HAVE ENOUGH TEMPORAL WINDOWS FOR CURRENT 'L4S'
     def isOK_ts_l4s(self,l4s_df):
         return (l4s_df.shape[0] == WINDOW)
 
@@ -154,8 +197,10 @@ class Get_Metrics(xAppBase):
         # NON L4S DRB
         if( nbm == len(DRB_METRICS) ):
             print("Concurrent, one UE")
-            # NO USER ID: IMPOSSIBLE TO KNOW 'AGG_INDEX'
-            agg_index = 1
+            # CONFIG - L4S = NON-L4S (just one)
+            nl4s = set(CONFIG.keys()) - set(L4S)
+            agg_index = CONFIG[ nl4s.pop() ]
+            print(agg_index)
             # RETRIEVE SAVED FEATURES (USED FOR PREDICTION)
             time_series = self.agg_drb[agg_index][0]
             current_idx = self.agg_drb[agg_index][1]
@@ -166,7 +211,7 @@ class Get_Metrics(xAppBase):
         # L4S DRB 
         else:
             print("L4S, one UE")
-            ue_id = 0
+            ue_id = L4S[0]
             # RETRIEVE SAVED FEATURES
             time_series = self.l4s_drb[ue_id][0]
             current_idx =  self.l4s_drb[ue_id][1]
@@ -221,6 +266,7 @@ class Get_Metrics(xAppBase):
                 for ue_id in meas_data["ueMeasData"].keys():
                     if self.isOK_ts_l4s(self.l4s_drb[ue_id][0]): # L4S trafic
                         print("PREDICT - MULTI UE")
+                        # PREDICTION
                         self.predict(ue_id,self.l4s_drb[ue_id][0],agg_df)
 
 
