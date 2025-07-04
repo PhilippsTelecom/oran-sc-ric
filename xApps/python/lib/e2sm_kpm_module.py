@@ -11,8 +11,15 @@ def ntp_ts_to_datetime(ntp_timestamp):
     # Offset between NTP and Unix epochs (1900-1970 in seconds)
     ntp_epoch_offset = 2208988800
 
-    # Subtract the NTP epoch offset to get Unix timestamp
-    unix_timestamp = (ntp_timestamp >> 32) - ntp_epoch_offset
+    # Extract seconds and fractional part from 64-bit NTP timestamp
+    seconds = (ntp_timestamp >> 32) & 0xFFFFFFFF
+    fraction = ntp_timestamp & 0xFFFFFFFF
+
+    # Convert fraction to seconds (fraction / 2^32)
+    fraction_seconds = fraction / float(1 << 32)
+
+    # Calculate Unix timestamp
+    unix_timestamp = seconds - ntp_epoch_offset + fraction_seconds
 
     # Convert Unix timestamp to datetime
     return datetime.datetime.utcfromtimestamp(unix_timestamp)
