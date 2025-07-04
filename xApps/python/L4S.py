@@ -6,6 +6,9 @@ import time
 import pandas as pd
 import numpy as np
 import math 
+# THREADING
+from threading import Thread, Event, current_thread
+import queue
 # LOAD MODELS
 import joblib
 import keras # 2.13.1 (Must be same as Predict.py)
@@ -50,21 +53,161 @@ L4S = [0]
 
 
 
-class Get_Metrics(xAppBase):
-    def __init__(self, config, http_server_port, rmr_port):
-        super(Get_Metrics, self).__init__(config, http_server_port, rmr_port)
-        # Load SCALER to rescale delays
-        scaler =  joblib.load(SAV_SCALER)
-        self.val_min = scaler.data_min_[COL_INDEX]
-        self.val_max = scaler.data_max_[COL_INDEX]
-        # Load LSTM model
-        self.model = keras.models.load_model(SAV_MODEL)
-        # L4S DRBs / KEY = UE_ID
-        self.l4s_drb = {key: (pd.DataFrame(columns=ALL_METRICS),0) for key in L4S }
-        # Aggregated DRBs / KEY = AGG_DRB
-        self.agg_drb = {key: (pd.DataFrame(columns=[ "%s-%d"%(metric,key) for metric in DRB_METRICS]),0) for key in CONFIG.values()}
 
-    ################################ UTILS FOR PREDICTION ################################
+################################ PREDICTION THREADS ################################
+
+
+
+
+class Predictor():
+
+
+    def __init__(self,dat_input,dat_output,eve_stop):
+        # LOAD SCALER TO RESCALE DELAYS
+        self.scaler =  joblib.load(SAV_SCALER)
+        self.val_min = self.scaler.data_min_[COL_INDEX]
+        self.val_max = self.scaler.data_max_[COL_INDEX]
+        # LOAD LSTM MODEL
+        self.model = keras.models.load_model(SAV_MODEL)
+        # THREADS RELATED
+        self.stop = eve_stop
+        self.input = dat_input
+        self.output = dat_output
+        # AGG IDs
+        self.aggregators = list(set(CONFIG.values())) 
+
+
+    # PRE-PROCESS DATA: HANDLES NAN, ETC. FOR AGGREGATED AND L4S DFs
+    def replace(self,dataFrame,replace_by_zero,replace_by_prev):
+        # Replace by 0
+        for mu in replace_by_zero: 
+            dataFrame[mu] = dataFrame[mu].fillna(0)
+        # Replace by prev
+        for mu in replace_by_prev: 
+            curr_ind=0
+            last_val=0
+            # BROWSE ALL ITS ROWS
+            for row in dataFrame[mu]:
+                if not math.isnan(row):# Not a NaN: save value
+                    last_val = row
+                else:# Have a NaN: retrieve last good value
+                    dataFrame[mu].iloc[curr_ind] = last_val
+                curr_ind+=1
+        # TYPE OF VALUES
+        dataFrame = dataFrame.astype(float)
+        return dataFrame
+
+
+    def pre_process(self,l4s_df,agg_df):
+        # HANDLE NANs
+        # > l4s
+        replace_by_zero = METRICS_NAN_ZERO
+        replace_by_prev = METRICS_NAN_PREV
+        l4s_df = self.replace(l4s_df,replace_by_zero,replace_by_prev)
+        # > agg
+        replace_by_zero = [ "%s-%d"%(measure,drb) for drb in self.aggregators for measure in METRICS_NAN_ZERO_DRB ] # TODO: PROBLEM SELF.AGG_DRB.keys()
+        replace_by_prev = [ "%s-%d"%(measure,drb) for drb in self.aggregators for measure in METRICS_NAN_PREV_DRB ]
+        agg_df = self.replace(agg_df,replace_by_zero,replace_by_prev)
+
+        # CONCATENATE L4S + MERGED AGG DF 
+        X_df = pd.concat([l4s_df,agg_df], axis = 1)
+        
+        # SCALING (MinMax Scaler)
+        X_df = pd.DataFrame(self.scaler.transform(X_df.values),columns=X_df.columns)
+
+        return X_df
+
+
+    def re_scale(self,delay):
+        return delay * (self.val_max - self.val_min) + self.val_min
+
+
+    def compute_proba(self,delay):
+        # TESTS ON DELAY
+        mark_prob=0
+        if delay > TH_MAX:
+            mark_prob = 100
+        elif delay > TH_MIN:
+            mark_prob = (delay - TH_MIN) / (TH_MAX - TH_MIN) * 100 # Linear Probability
+        # RETURN PROBA
+        return mark_prob
+        
+
+    def Start(self):
+        while True:
+            if self.stop.is_set(): # RECEIVED A STOP SIGNAL
+                print("[!] Stopping predicting thread %d ... Bye!"%current_thread().native_id)
+                break
+            try:
+                # RETRIEVE VALUES
+                ue_id, drb_id, l4s_df, agg_df = self.input.get(timeout=1)
+                # PREPROCESSING
+                X_df = self.pre_process(l4s_df,agg_df)
+                # PREDICTION
+                l4s_delay=self.model.predict(np.array([X_df]))[0][0]
+                # GET NORMAL VALUE (CF SCALER)
+                l4s_delay = self.re_scale(l4s_delay)
+                print("[!] val_max = %f ; val_min = %f "%(self.val_max,self.val_min))
+                print("[!] Predicted Delay = %f "%l4s_delay)
+                # COMPUTE PROBA
+                mark_prob = self.compute_proba(l4s_delay)
+                # SENDS TO CONTROL THREAD
+                mark_prob = 0
+                self.output.put((ue_id,drb_id,mark_prob))
+                print("[!] We put something in the queue -> queue size = %d"%self.output.qsize())
+            except Exception as e:
+                continue
+
+
+
+
+################################ CONTROL THREAD: SENDS CONTROLS ################################
+
+
+
+
+class Controller():
+    
+    def __init__(self,dat_input,e2sm_rc,eve_stop: Event):
+        self.stop = eve_stop
+        self.input = dat_input
+        self.sender = e2sm_rc
+
+
+    def Start(self):
+        while True:
+            if self.stop.is_set(): # RECEIVED A STOP SIGNAL
+                print("[!] Stopping controller thread %d ... Bye!"%current_thread().native_id)
+                break
+            try:
+                ue_id, drb_id, mark_prob = self.input.get(timeout=1)
+                self.sender.control_drb_qos(CU_NODE_ID, ue_id,drb_id,mark_prob,ack_request=1)
+            except Exception as e:
+                continue
+
+
+
+
+################################ MAIN THREAD: LISTEN TO REPORTS ################################
+
+
+
+
+class Get_Metrics(xAppBase):
+    def __init__(self, config, http_server_port, rmr_port, dat_output, stop_threads):
+        super(Get_Metrics, self).__init__(config, http_server_port, rmr_port)        
+        # DATABASES
+        self.l4s_drb = {key: (pd.DataFrame(columns=ALL_METRICS),0) for key in L4S } # KEY = UE_ID / VALUE = DATA FRAME
+        self.agg_drb = {key: (pd.DataFrame(columns=[ "%s-%d"%(metric,key) for metric in DRB_METRICS]),0) for key in CONFIG.values()} # KEY = AGG_DRB / VALUE = AGGREGATED DATA FRAME
+        # THREAD RELATED
+        self.stop_control   = stop_threads
+        self.qu_output      = dat_output
+        # RELATED TO PERFS
+        self.nbReports      = 0
+        self.datFrstReport  = 0
+
+
+    ################################ AGGREGATION + MERGING ################################
 
 
     # AGGREGATE DATA: FROM SEVERAL ROWS TO ONE ROW
@@ -98,71 +241,7 @@ class Get_Metrics(xAppBase):
             # ADD ORDERED DF IN MERGED ONE (NEW COLUMNS)
             Ret = pd.concat([Ret,res],axis = 1)
         return Ret
-
-
-    # PRE-PROCESS DATA: HANDLES NAN, ETC. FOR AGGREGATED AND L4S DFs
-    def pre_process(self,dataFrame,replace_by_zero,replace_by_prev):
-        
-        # Replace by 0
-        for mu in replace_by_zero: 
-            dataFrame[mu] = dataFrame[mu].fillna(0)
-            pass
-            
-        # Replace by prev
-        for mu in replace_by_prev: 
-            curr_ind=0
-            last_val=0
-            # BROWSE ALL ITS ROWS
-            for row in dataFrame[mu]:
-                if not math.isnan(row):# Not a NaN: save value
-                    last_val = row
-                else:# Have a NaN: retrieve last good value
-                    dataFrame[mu].iloc[curr_ind] = last_val
-                curr_ind+=1     
-       
-        # TYPE OF VALUES
-        dataFrame = dataFrame.astype(float)
-        return dataFrame
-
-
-    # PREDICT FOR SPECIFIC L4S DRB
-    def predict(self,ue_id,l4s_df,agg_df):
-
-        # PRE-PROCESS DATA
-        # > l4s
-        replace_by_zero = METRICS_NAN_ZERO
-        replace_by_prev = METRICS_NAN_PREV
-        l4s_df = self.pre_process(l4s_df,replace_by_zero,replace_by_prev)
-        # > agg
-        replace_by_zero = [ "%s-%d"%(measure,drb) for drb in self.agg_drb.keys() for measure in METRICS_NAN_ZERO_DRB ]
-        replace_by_prev = [ "%s-%d"%(measure,drb) for drb in self.agg_drb.keys() for measure in METRICS_NAN_PREV_DRB ]
-        agg_df = self.pre_process(agg_df,replace_by_zero,replace_by_prev)
-        
-        # CONCATENATE L4S + MERGED AGG DF 
-        X_df = pd.concat([l4s_df,agg_df], axis = 1)
-
-        # PREDICT DELAY
-        l4s_delay=self.model.predict(np.array([X_df]))
-        l4s_delay = l4s_delay[0][0]
-        print(l4s_delay)
-        # GET NORMAL DELAY (CF SCALER)
-        l4s_delay = l4s_delay * (self.val_max - self.val_min) + self.val_min
-        print("[!] val_max = %f ; val_min = %f "%(self.val_max,self.val_min))
-        print("[!] Predicted Delay = %f "%l4s_delay)
-
-        # COMPUTE PROBA
-        if l4s_delay < TH_MIN:
-            mark_prob = 0
-        elif l4s_delay > TH_MAX:
-            mark_prob = 100
-        else: # Linear Probability
-            mark_prob = (l4s_delay - TH_MIN) / (TH_MAX - TH_MIN) * 100
-        
-        # SEND
-        drb_id = 1
-        mark_prob = 0
-        self.e2sm_rc.control_drb_qos(CU_NODE_ID, ue_id,drb_id,mark_prob,ack_request=1)
-
+ 
 
     ################################ TEST IF OK TO PREDICT ################################
 
@@ -197,10 +276,8 @@ class Get_Metrics(xAppBase):
         # NON L4S DRB
         if( nbm == len(DRB_METRICS) ):
             print("Concurrent, one UE")
-            # CONFIG - L4S = NON-L4S (just one)
-            nl4s = set(CONFIG.keys()) - set(L4S)
-            agg_index = CONFIG[ nl4s.pop() ]
-            print(agg_index)
+            # NO USER ID: IMPOSSIBLE TO KNOW 'AGG_INDEX'
+            agg_index = 1
             # RETRIEVE SAVED FEATURES (USED FOR PREDICTION)
             time_series = self.agg_drb[agg_index][0]
             current_idx = self.agg_drb[agg_index][1]
@@ -224,7 +301,9 @@ class Get_Metrics(xAppBase):
                 agg_df = self.Merge_agg_drb()
                 if self.isOK_ts_l4s(self.l4s_drb[ue_id][0]): # L4S traffic
                     print("PREDICT - L4S ONE UE")
-                    self.predict(ue_id,self.l4s_drb[ue_id][0],agg_df)
+                    # PREDICTION
+                    drb_id = 1
+                    self.qu_output.put((ue_id,drb_id,self.l4s_drb[ue_id][0].copy(),agg_df.copy()))
 
 
     # HANDLE REPORT STYLE =5 (SEVERAL UEs)
@@ -267,12 +346,31 @@ class Get_Metrics(xAppBase):
                     if self.isOK_ts_l4s(self.l4s_drb[ue_id][0]): # L4S trafic
                         print("PREDICT - MULTI UE")
                         # PREDICTION
-                        self.predict(ue_id,self.l4s_drb[ue_id][0],agg_df)
+                        drb_id = 1
+                        self.qu_output.put((ue_id,drb_id,self.l4s_drb[ue_id][0].copy(),agg_df.copy()))
+
+
+    # JUST TO KNOW PERFORMANCES
+    def performances(self):
+        timestamp = time.time()
+        # INIT
+        if self.nbReports == 0:
+            self.datFrstReport = timestamp
+        # PRINT STATS
+        if self.nbReports == 10:
+            time_spent = timestamp - self.datFrstReport
+            # 2*2 reports per second => 4 reports per second => 10/4=2.5 seconds
+            print("[!] We handled 10 reports in %f seconds => %f percents "%(time_spent,(time_spent/2.5))) 
+            self.nbReports = 0
+            self.datFrstReport = timestamp
+        # UPDATE
+        self.nbReports = self.nbReports +1
 
 
     # CALLED WHEN RECEIVING A RIC INDICATION MSG 
     def my_subscription_callback(self, e2_agent_id, subscription_id, indication_hdr, indication_msg, kpm_report_style, ue_id):
-        timestamp = time.time()
+        # TEMPORARY
+        self.performances()
 
         # Retrieves header + data
         indication_hdr = self.e2sm_kpm.extract_hdr_info(indication_hdr)
@@ -313,8 +411,6 @@ class Get_Metrics(xAppBase):
     # It is required to start the internal msg receive loop.
     @xAppBase.start_function
     def start(self):
-        report_period = 500 # 1000 by default
-        granul_period = 500 # 1000 by default
 
         # Subscription for L4S (ALL)
         self.subscribe_to(DU_NODE_ID,L4S,ALL_METRICS)
@@ -330,29 +426,64 @@ class Get_Metrics(xAppBase):
     
     # Unsuscribes
     def signal_handler(self, sig, frame):
+        self.stop_control.set()
         super().stop()
 
 
 
 
+################################ LANCHES THREADS ################################
+
+
+def prediction_threads(qu_input,qu_output,stop):
+    NB_THREADS=5
+    for i in range(NB_THREADS):
+        instance = Predictor(qu_input,qu_output,stop) # Class Instance
+        predict = Thread(target=instance.Start) # Thread
+        predict.start()
+
+
+def control_thread(qu_input,sender,stop):
+    controller = Controller(qu_input,sender,stop) # Class Instance
+    control = Thread(target=controller.Start) # Thread
+    control.start()
+
+
+################################ MAIN ################################
+
+
 # MAIN FUNCTION 
 if __name__ == '__main__':
 
-
-    # CREATE KPM XAPP
     # CONSTANT VALUES
     http_server_port = 8092
     rmr_port = 4562
     ran_func_id_kpm = 2
     ran_func_id_rc = 3
-    # CREATION
-    myXapp = Get_Metrics('', http_server_port, rmr_port)
+
+
+    # THREAD COMMUNICATION
+    stop_threads = Event()
+    queue_predict = queue.Queue()
+    queue_control = queue.Queue()
+    # MAIN THREAD: READ METRICS
+    print("[!] Main Thread: starting reading KPM Metrics")
+    myXapp = Get_Metrics('', http_server_port, rmr_port,queue_predict,stop_threads)
     myXapp.e2sm_kpm.set_ran_func_id(ran_func_id_kpm) # KPM
     myXapp.e2sm_rc.set_ran_func_id(ran_func_id_rc) # RC
+    # LAUNCHES PREDICTION THREADS
+    print("[!] Launching 'predicting' threads")
+    prediction_threads(queue_predict,queue_control,stop_threads)
+    # LAUNCHES CONTROL THREAD
+    print("[!] Launching 'control' thread")
+    control_thread(queue_control,myXapp.e2sm_rc,stop_threads)
+
+
     # EXIT SIGNALS
     signal.signal(signal.SIGQUIT, myXapp.signal_handler)
     signal.signal(signal.SIGTERM, myXapp.signal_handler)
     signal.signal(signal.SIGINT, myXapp.signal_handler)
-    # START XAPP 
+    # START XAPP
     myXapp.start()
     # Note: xApp will unsubscribe all active subscriptions at exit.
+    # It also stops the threads (Prediction + Control)
