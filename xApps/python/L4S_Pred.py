@@ -11,6 +11,7 @@ from threading import Thread, Event, current_thread
 import queue
 # LOAD MODELS
 import joblib
+import tensorflow as tf
 import keras # 2.13.1 (Must be same as Predict.py)
 
 
@@ -75,6 +76,8 @@ class Predictor():
         self.output = dat_output
         # AGG IDs
         self.aggregators = list(set(CONFIG.values())) 
+        # PERFS
+        self.times = []
 
 
     # PRE-PROCESS DATA: HANDLES NAN, ETC. FOR AGGREGATED AND L4S DFs
@@ -105,7 +108,7 @@ class Predictor():
         replace_by_prev = METRICS_NAN_PREV
         l4s_df = self.replace(l4s_df,replace_by_zero,replace_by_prev)
         # > agg
-        replace_by_zero = [ "%s-%d"%(measure,drb) for drb in self.aggregators for measure in METRICS_NAN_ZERO_DRB ] # TODO: PROBLEM SELF.AGG_DRB.keys()
+        replace_by_zero = [ "%s-%d"%(measure,drb) for drb in self.aggregators for measure in METRICS_NAN_ZERO_DRB ] 
         replace_by_prev = [ "%s-%d"%(measure,drb) for drb in self.aggregators for measure in METRICS_NAN_PREV_DRB ]
         agg_df = self.replace(agg_df,replace_by_zero,replace_by_prev)
 
@@ -137,24 +140,35 @@ class Predictor():
         while True:
             if self.stop.is_set(): # RECEIVED A STOP SIGNAL
                 print("[!] Stopping predicting thread %d ... Bye!"%current_thread().native_id)
+                if len(self.times) > 0:
+                    print("[!] Thread made %d classifications"%(len(self.times)))
+                    print("[!] Perfs: Mean Inference Time = %f "%(sum(self.times)/len(self.times)))
+                    for el in self.times: print(el.numpy())
                 break
             try:
                 # RETRIEVE VALUES
                 ue_id, drb_id, l4s_df, agg_df = self.input.get(timeout=1)
+                # PERFORMANCES: INFERENCE TIME
+                start = tf.timestamp() 
                 # PREPROCESSING
                 X_df = self.pre_process(l4s_df,agg_df)
                 # PREDICTION
                 l4s_delay=self.model.predict(np.array([X_df]))[0][0]
                 # GET NORMAL VALUE (CF SCALER)
+                l4s_delay = 0
                 l4s_delay = self.re_scale(l4s_delay)
-                print("[!] val_max = %f ; val_min = %f "%(self.val_max,self.val_min))
-                print("[!] Predicted Delay = %f "%l4s_delay)
+                # print("[!] val_max = %f ; val_min = %f "%(self.val_max,self.val_min))
+                # print("[!] Predicted Delay = %f "%l4s_delay)
                 # COMPUTE PROBA
                 mark_prob = self.compute_proba(l4s_delay)
                 # SENDS TO CONTROL THREAD
                 mark_prob = 0
                 self.output.put((ue_id,drb_id,mark_prob))
-                print("[!] We put something in the queue -> queue size = %d"%self.output.qsize())
+                # print("[!] We put something in the queue -> queue size = %d"%self.output.qsize())
+                
+                # PERFORMANCES: INFERENCE TINE
+                end = tf.timestamp() # Perfs
+                self.times.append(end-start)
             except Exception as e:
                 continue
 
@@ -169,8 +183,8 @@ class Predictor():
 class Controller():
     
     def __init__(self,dat_input,e2sm_rc,eve_stop: Event):
-        self.stop = eve_stop
-        self.input = dat_input
+        self.stop   = eve_stop
+        self.input  = dat_input
         self.sender = e2sm_rc
 
 
@@ -203,9 +217,9 @@ class Get_Metrics(xAppBase):
         self.stop_control   = stop_threads
         self.qu_output      = dat_output
         # RELATED TO PERFS
-        self.nbReports      = 0
+        self.nbReports      = 0 
         self.datFrstReport  = 0
-
+        self.datLastReport  = 0
 
     ################################ AGGREGATION + MERGING ################################
 
@@ -217,7 +231,7 @@ class Get_Metrics(xAppBase):
         for mu in DRB_METRICS:
             # MEAN FOR EACH UE
             if mu in ['DRB.RlcPacketDropRateDl','DRB.RlcSduDelayDl','DRB.RlcDelayUl']:
-                values.append(dataF[mu].mean(axis=0))
+                values.append(dataF[mu].mean(axis=0)) # mean for each column
             # SUM FOR EACH UE
             else:
                 values.append(dataF[mu].sum(axis=0))
@@ -320,7 +334,7 @@ class Get_Metrics(xAppBase):
             # RETRIEVE METRICS IN REPORT (AS MANY ROWS AS UEs)
             df = pd.DataFrame()
             for ue_id, ue_meas_data in meas_data["ueMeasData"].items():
-                df = pd.concat([df,pd.DataFrame(ue_meas_data["measData"])])
+                df = pd.concat([df,pd.DataFrame(ue_meas_data["measData"])]) # Several rows
             # AGGREGATE METRICS -> ONE ROW
             df = self.aggregate(df)
             # SAVE AGGREGATED METRICS IN FEATURES
@@ -356,15 +370,9 @@ class Get_Metrics(xAppBase):
         # INIT
         if self.nbReports == 0:
             self.datFrstReport = timestamp
-        # PRINT STATS
-        if self.nbReports == 10:
-            time_spent = timestamp - self.datFrstReport
-            # 2*2 reports per second => 4 reports per second => 10/4=2.5 seconds
-            print("[!] We handled 10 reports in %f seconds => %f percents "%(time_spent,(time_spent/2.5))) 
-            self.nbReports = 0
-            self.datFrstReport = timestamp
         # UPDATE
         self.nbReports = self.nbReports +1
+        self.datLastReport  = timestamp
 
 
     # CALLED WHEN RECEIVING A RIC INDICATION MSG 
@@ -411,7 +419,6 @@ class Get_Metrics(xAppBase):
     # It is required to start the internal msg receive loop.
     @xAppBase.start_function
     def start(self):
-
         # Subscription for L4S (ALL)
         self.subscribe_to(DU_NODE_ID,L4S,ALL_METRICS)
 
@@ -426,6 +433,8 @@ class Get_Metrics(xAppBase):
     
     # Unsuscribes
     def signal_handler(self, sig, frame):
+        length = self.datLastReport - self.datFrstReport
+        print("[!] Time between 1st and last reports = %f, total reports = %d, mean reports per second = %f"%(length,self.nbReports,self.nbReports/length))
         self.stop_control.set()
         super().stop()
 
@@ -436,11 +445,12 @@ class Get_Metrics(xAppBase):
 
 
 def prediction_threads(qu_input,qu_output,stop):
-    NB_THREADS=5
+    NB_THREADS=2
+    print("[!] Launching %d threads to predict "%NB_THREADS)
     for i in range(NB_THREADS):
         instance = Predictor(qu_input,qu_output,stop) # Class Instance
-        predict = Thread(target=instance.Start) # Thread
-        predict.start()
+        thread = Thread(target=instance.Start) # Thread
+        thread.start()
 
 
 def control_thread(qu_input,sender,stop):
