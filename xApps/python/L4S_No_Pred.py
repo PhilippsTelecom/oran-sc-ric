@@ -18,7 +18,8 @@ import queue
 L4S     = []
 NL4S    = [0,1]
 CONG_INDICATOR  = 'DRB.RlcStateDL'
-ALL_METRICS     = [CONG_INDICATOR,'DRB.RlcSduDelayDl','DRB.RlcSduTransmittedVolumeDL','DRB.RlcPacketDropRateDl']
+DU_METRICS     = [CONG_INDICATOR,'DRB.RlcSduDelayDl','DRB.RlcSduTransmittedVolumeDL','DRB.RlcPacketDropRateDl']
+CU_METRICS       = ['DRB.PdcpTxBytes']
 # L4S THRESHOLDS (SAME AS IN DU)
 MIN_THRESH_QUEUE = 11250
 MAX_THRESH_QUEUE = 37500
@@ -88,7 +89,7 @@ class Get_Metrics(xAppBase):
 
 
     # HANDLE REPORT STYLE =2 (ONE UE)
-    def report_for_one_ue(self,meas_data):
+    def report_for_one_ue(self,meas_data,timestamp):
         # RETRIEVE 
         met=meas_data["measData"][CONG_INDICATOR]
         queue_size = met[0]
@@ -100,15 +101,14 @@ class Get_Metrics(xAppBase):
         self.qu_output.put((ue_id,drb_id,mark_proba))
         
         # DISPLAY
-        timestamp = time.time()
         for metric_name, value in meas_data["measData"].items():
+            print("%s = "%(metric_name),value)
             self.display[ue_id].append((timestamp,metric_name,value))
 
 
     # HANDLE REPORT STYLE =5 (SEVERAL UEs)
-    def report_for_several_ues(self,meas_data):
+    def report_for_several_ues(self,meas_data,timestamp):
         drb_id = 1
-        timestamp = time.time()
         
         # HANDLE L4S SIGNALS 
         for ue_id in L4S:
@@ -124,6 +124,7 @@ class Get_Metrics(xAppBase):
         # SAVE STATS
         for ue_id, ue_meas_data in meas_data["ueMeasData"].items():
             for metric_name, value in ue_meas_data["measData"].items():
+                print("%s = "%(metric_name),value)
                 self.display[ue_id].append((timestamp,metric_name,value))
     
 
@@ -142,15 +143,16 @@ class Get_Metrics(xAppBase):
 
         # RETRIEVES HEADER + DATA
         indication_hdr = self.e2sm_kpm.extract_hdr_info(indication_hdr)
+        timestamp = indication_hdr['colletStartTime']
         meas_data = self.e2sm_kpm.extract_meas_data(indication_msg)
 
         # METRICS FOR ONE DRB / NO NEED TO AGGREGATE
         if kpm_report_style == 2:
-            self.report_for_one_ue(meas_data)
+            self.report_for_one_ue(meas_data,timestamp)
             
         # METRICS FOR SEVERAL DRBs
         if kpm_report_style in [3,4,5]:
-            self.report_for_several_ues(meas_data)
+            self.report_for_several_ues(meas_data,timestamp)
 
 
     ################################ SUBSCRIBES TO ################################
@@ -159,8 +161,8 @@ class Get_Metrics(xAppBase):
     # SUBSCRIBES TO METRICS `metrics` OF NODE `e2_node_id` FOR ALL UES `ue_ids`
     def subscribe_to(self,e2_node_id,ue_ids,metrics):
         # Fixed
-        report_period = 10 # 1000 by default
-        granul_period = 10 # 1000 by default
+        report_period = 50 # 1000 by default
+        granul_period = 50 # 1000 by default
         
         if(len(ue_ids)==1):
             Service_Style = 2
@@ -180,7 +182,9 @@ class Get_Metrics(xAppBase):
     @xAppBase.start_function
     def start(self):
         # Subscription for L4S
-        self.subscribe_to(DU_NODE_ID,L4S+NL4S,ALL_METRICS)
+        self.subscribe_to(DU_NODE_ID,L4S+NL4S,DU_METRICS)
+        # Other metric from CU 
+        #self.subscribe_to(CU_NODE_ID,L4S+NL4S,CU_METRICS)
 
 
 
@@ -192,7 +196,7 @@ class Get_Metrics(xAppBase):
         # PERFS
         last = self.LastReport-self.FirstReport
         print("[!] Handled %d reports in %f "%(self.Handled,last))
-        print("[!] This represents %f reports per second."%(self.Handled / last))
+        if last > 0 : print("[!] This represents %f reports per second."%(self.Handled / last))
         
         # STOPS MARKING
         drb_id = 1

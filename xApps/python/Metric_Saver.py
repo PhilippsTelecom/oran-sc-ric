@@ -33,16 +33,16 @@ class MyXapp(xAppBase):
 
 
     def my_subscription_callback(self, e2_agent_id, subscription_id, indication_hdr, indication_msg, kpm_report_style, ue_id):
-        timestamp = time.time()
+
+        # Retrieves header + data
+        indication_hdr = self.e2sm_kpm.extract_hdr_info(indication_hdr)
+        timestamp = indication_hdr['colletStartTime']
+        meas_data = self.e2sm_kpm.extract_meas_data(indication_msg)
 
         # Related to perfs
         if self.FirstReport == 0: self.FirstReport=timestamp # Init
         self.LastReport     = timestamp
         self.Handled        = self.Handled + 1 # Increment
-
-        # Retrieves header + data
-        indication_hdr = self.e2sm_kpm.extract_hdr_info(indication_hdr)
-        meas_data = self.e2sm_kpm.extract_meas_data(indication_msg)
 
         # METRICS FOR ONE DRB
         if kpm_report_style == 2:
