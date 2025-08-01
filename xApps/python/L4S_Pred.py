@@ -22,8 +22,8 @@ SAV_SCALER="./Model/min_max"
 SAV_MODEL ="./Model/lstm.keras"
 # METRIC CATEGORIES
 DRB_METRICS     = [
-    'DRB.RlcSduDelayDl','DRB.UEThpDl','DRB.RlcPacketDropRateDl','DRB.RlcSduTransmittedVolumeDL',
-    'DRB.RlcDelayUl','DRB.UEThpUl','DRB.AirIfDelayUl','DRB.RlcSduTransmittedVolumeUL']
+    'DRB.UEThpDl','DRB.RlcPacketDropRateDl','DRB.RlcSduTransmittedVolumeDL',
+    'DRB.RlcDelayUl','DRB.UEThpUl','DRB.AirIfDelayUl','DRB.RlcSduTransmittedVolumeUL','DRB.RlcStateDL']
 RRU_METRICS     = [
     'RRU.PrbAvailDl','RRU.PrbUsedDl','RRU.PrbTotDl',
     'RRU.PrbAvailUl','RRU.PrbUsedUl','RRU.PrbTotUl']
@@ -31,7 +31,7 @@ MISC_METRICS    = [
     'CQI','RSRP','RSRQ','RACH.PreambleDedCell']
 ALL_METRICS     = DRB_METRICS + RRU_METRICS + MISC_METRICS 
 # PRE-PROCESSING
-METRICS_NAN_ZERO= ['CQI','DRB.RlcSduDelayDl','DRB.RlcDelayUl','DRB.AirIfDelayUl'] # METRICS WHERE NAN CAN BE REPLACED BY '0'
+METRICS_NAN_ZERO= ['CQI','DRB.RlcDelayUl','DRB.AirIfDelayUl'] # METRICS WHERE NAN CAN BE REPLACED BY '0'
 METRICS_NAN_ZERO_DRB= list(set(DRB_METRICS) & set(METRICS_NAN_ZERO))
 METRICS_NAN_PREV= list(set(ALL_METRICS) - set(METRICS_NAN_ZERO)) # OTHER METRICS
 METRICS_NAN_PREV_DRB= list(set(DRB_METRICS) & set(METRICS_NAN_PREV))
@@ -40,7 +40,7 @@ METRIC_TO_PRED  = 'DRB.RlcSduDelayDl'
 COL_INDEX = ALL_METRICS.index(METRIC_TO_PRED)
 WINDOW          = 10
 # L4S THRESHOLDS
-TH_MIN = 2
+TH_MIN = 5
 TH_MAX = 10
 # CONNECT TO E2 NODE (wget 10.10.5.13:8080/ric/v1/get_all_e2nodes)
 DU_NODE_ID = "gnbd_001_001_00019b_0"
@@ -230,7 +230,7 @@ class Get_Metrics(xAppBase):
         values = []
         for mu in DRB_METRICS:
             # MEAN FOR EACH UE
-            if mu in ['DRB.RlcPacketDropRateDl','DRB.RlcSduDelayDl','DRB.RlcDelayUl']:
+            if mu in ['DRB.RlcPacketDropRateDl','DRB.RlcDelayUl','DRB.AirIfDelayUl']:
                 values.append(dataF[mu].mean(axis=0)) # mean for each column
             # SUM FOR EACH UE
             else:

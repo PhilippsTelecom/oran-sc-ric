@@ -17,12 +17,13 @@ import queue
 # RELATED TO PREDICTION
 L4S     = []
 NL4S    = [0,1]
-CONG_INDICATOR  = 'DRB.RlcStateDL'
-DU_METRICS     = [CONG_INDICATOR,'DRB.RlcSduDelayDl','DRB.RlcSduTransmittedVolumeDL','DRB.RlcPacketDropRateDl']
-CU_METRICS       = ['DRB.PdcpTxBytes']
+AVG_THROUGH     = 'DRB.UEThpDl' # kbps
+QUE_SIZE        = 'DRB.RlcStateDL' 
+DU_METRICS      = [AVG_THROUGH, QUE_SIZE]
+CU_METRICS      = ['DRB.PdcpTxBytes']
 # L4S THRESHOLDS (SAME AS IN DU)
-MIN_THRESH_QUEUE = 11250
-MAX_THRESH_QUEUE = 37500
+MIN_THRESH_DELAYS = 5
+MAX_THRESH_DELAYS = 10
 # CONNECT TO E2 NODE (wget 10.10.5.13:8080/ric/v1/get_all_e2nodes)
 DU_NODE_ID = "gnbd_001_001_00019b_0"
 CU_NODE_ID = "gnb_001_001_00019b"  
@@ -81,28 +82,36 @@ class Get_Metrics(xAppBase):
 
 
     # COMPUTE MARKING PROBABILITY 
-    def compute_mark_prob(self,queue_size):
+    def compute_mark_prob(self,queue_delay):
         proba = 0
-        if queue_size > MAX_THRESH_QUEUE: proba = 100
-        elif queue_size > MIN_THRESH_QUEUE: proba = (queue_size - MIN_THRESH_QUEUE) / (MAX_THRESH_QUEUE - MIN_THRESH_QUEUE)
+        if queue_delay > MAX_THRESH_DELAYS: proba = 100
+        elif queue_delay > MIN_THRESH_DELAYS: proba = (queue_delay - MIN_THRESH_DELAYS) * 100 / (MAX_THRESH_DELAYS - MIN_THRESH_DELAYS)
         return proba
 
 
     # HANDLE REPORT STYLE =2 (ONE UE)
     def report_for_one_ue(self,meas_data,timestamp):
         # RETRIEVE 
-        met=meas_data["measData"][CONG_INDICATOR]
-        queue_size = met[0]
+        queue_size  = meas_data["measData"][QUE_SIZE][0] # bytes
+        avg_through = meas_data["measData"][AVG_THROUGH][0] # kbps
         # COMPUTE 
-        mark_proba = self.compute_mark_prob(queue_size)
+        if avg_through>0: 
+            est_delay   = float(queue_size * 8) / avg_through # bits / kbps => ms
+            mark_proba  = self.compute_mark_prob(est_delay)
+        else:
+            est_delay   = ""
+            mark_proba  = 100
         # SEND
         ue_id   = 0
         drb_id  = 1
         self.qu_output.put((ue_id,drb_id,mark_proba))
         
-        # DISPLAY
+        # SAVE L4S SPECIFIC METRICS (COMPUTED)
+        self.display[ue_id].append((timestamp,"DRB.ComputedDelay",[est_delay]))
+        self.display[ue_id].append((timestamp,"DRB.MarkProba",[mark_proba]))
+        # SAVE GENERAL METRICS
         for metric_name, value in meas_data["measData"].items():
-            print("%s = "%(metric_name),value)
+            # print("%s = "%(metric_name),value)
             self.display[ue_id].append((timestamp,metric_name,value))
 
 
@@ -113,19 +122,36 @@ class Get_Metrics(xAppBase):
         # HANDLE L4S SIGNALS 
         for ue_id in L4S:
             # RETRIEVE 
-            met = meas_data["ueMeasData"][ue_id]["measData"][CONG_INDICATOR]
-            queue_size = met[0]
+            queue_size  = meas_data["ueMeasData"][ue_id]["measData"][QUE_SIZE][0]
+            avg_through = meas_data["ueMeasData"][ue_id]["measData"][AVG_THROUGH][0]
             # COMPUTE 
-            mark_proba = self.compute_mark_prob(queue_size)
+            if avg_through>0: 
+                est_delay   = float(queue_size * 8) / avg_through # bits / kbps => ms
+                mark_proba = self.compute_mark_prob(est_delay)
+            else:
+                est_delay   = ""
+                mark_proba  = 100
+            # SAVE L4S SPECIFIC METRICS (COMPUTED)
+            self.display[ue_id].append((timestamp,"DRB.ComputedDelay",[est_delay]))
+            self.display[ue_id].append((timestamp,"DRB.MarkProba",[mark_proba]))  
+            #print("[!] L4S QUEUE DELAY = %f ms / MARK PROB = %d "%(est_delay,mark_proba))
             # SEND
             drb_id  = 1
             self.qu_output.put((ue_id,drb_id,mark_proba))
 
-        # SAVE STATS
+        # SAVE GENERAL METRICS
         for ue_id, ue_meas_data in meas_data["ueMeasData"].items():
             for metric_name, value in ue_meas_data["measData"].items():
-                print("%s = "%(metric_name),value)
+                # print("%s = "%(metric_name),value)
                 self.display[ue_id].append((timestamp,metric_name,value))
+            # # ADD QUEUE DELAY VALUE
+            # queue_size  = meas_data["ueMeasData"][ue_id]["measData"][QUE_SIZE][0]
+            # avg_through = meas_data["ueMeasData"][ue_id]["measData"][AVG_THROUGH][0]
+            # if avg_through > 0:
+            #     est_delay   = float(queue_size * 8) / avg_through # bits / kbps => ms
+            # else:
+            #     est_delay   = ""
+            # self.display[ue_id].append((timestamp,"DRB.ComputedDelay",est_delay))  
     
 
     ################################ HANDLES INCOMING REPORT ################################
