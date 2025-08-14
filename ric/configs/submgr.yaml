@@ -1,5 +1,5 @@
 "local":
-  "host": "10.10.5.13:8080"
+  "host": "10.0.2.13:8080"
 "logger":
   "level": 1
 "rmr":
@@ -7,12 +7,12 @@
   "maxSize": 8192
   "numWorkers": 1
 "rtmgr":
-  "hostAddr": "10.10.5.15"
+  "hostAddr": "10.0.2.15"
   "port"    : "12020"
   "baseUrl" : "/ric/v1"
 "db":
   "sessionNamespace": "XMSession"
-  "host": "10.10.5.12:6379"
+  "host": "10.0.2.12:6379"
   "prot": "tcp"
   "maxIdle": 80
   "maxActive": 12000

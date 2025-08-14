@@ -7,6 +7,8 @@ import pandas as pd
 import numpy as np
 import math 
 import csv
+import os
+import argparse
 # THREADING
 from threading import Thread, Event, current_thread
 import queue
@@ -14,19 +16,24 @@ import queue
 
 
 
-# RELATED TO PREDICTION
-L4S     = []
-NL4S    = [0,1]
-AVG_THROUGH     = 'DRB.UEThpDl' # kbps
-QUE_SIZE        = 'DRB.RlcStateDL' 
-DU_METRICS      = [AVG_THROUGH, QUE_SIZE]
-CU_METRICS      = ['DRB.PdcpTxBytes']
+# RELATED TO METRICS
+    # (i) METRICS ON LAST WINDOW
+QUE_SIZE    = 'DRB.RlcStateDL'
+AVG_THROUGH = 'DRB.MacGrantThpDl'
+LST_METRICS = [QUE_SIZE,AVG_THROUGH,'DRB.RlcSduLastDelayDl','DRB.LastUEThpDl'] # Computed over last window (10 ms)
+    # (ii) METRICS ON SEVERAL WINDOWS 
+AVG_METRICS = ['DRB.UEThpDl','DRB.RlcSduTransmittedVolumeDL']
+    # (iii) FINAL METRICS
+DU_METRICS  = ['RRU.PrbAvailDl','RRU.PrbUsedDl'] + LST_METRICS + AVG_METRICS 
+CU_METRICS  = ['DRB.PdcpTxBytes']
+
 # L4S THRESHOLDS (SAME AS IN DU)
 MIN_THRESH_DELAYS = 5
 MAX_THRESH_DELAYS = 10
-# CONNECT TO E2 NODE (wget 10.10.5.13:8080/ric/v1/get_all_e2nodes)
-DU_NODE_ID = "gnbd_001_001_00019b_0"
-CU_NODE_ID = "gnb_001_001_00019b"  
+
+# CONNECT TO E2 NODE (wget 10.0.2.13:8080/ric/v1/get_all_e2nodes)
+DU_NODE_ID = "gnbd_001_001_00019b_0" # "gnbd_001_001_00019b_0"
+CU_NODE_ID = "gnb_001_001_00019b" # "gnb_001_001_00019b"  
 
 
 
@@ -64,8 +71,11 @@ class Controller():
 
 
 class Get_Metrics(xAppBase):
-    def __init__(self, config, http_server_port, rmr_port, dat_output, stop_threads):
-        super(Get_Metrics, self).__init__(config, http_server_port, rmr_port)        
+    def __init__(self, config, ues_index, http_server_port, rmr_port, dat_output, stop_threads):
+        super(Get_Metrics, self).__init__(config, http_server_port, rmr_port)   
+        # DISTINGUISHING UEs
+        self.oth_ues        = ues_index[0]     
+        self.l4s_ues        = ues_index[1]
         # THREAD RELATED
         self.stop_control   = stop_threads
         self.qu_output      = dat_output
@@ -75,16 +85,24 @@ class Get_Metrics(xAppBase):
         self.Handled        = 0
         # TO PRINT
         self.display        = {}
-        [self.display.setdefault(i,[]) for i in L4S + NL4S]
+        [self.display.setdefault(i,[]) for i in self.l4s_ues  + self.oth_ues]
 
 
     ################################ HANDLES INCOMING REPORT ################################
 
+    # COMPUTE QUEUE DELAY
+    def compute_queue_delay(self,queue_size,queue_throughput):
+        est_delay=0                                                 # Default
+        if queue_throughput > 0:                                    # (Throughput > 0) ==> We can compute delay
+            est_delay   = float(queue_size * 8) / queue_throughput  # bits / kbps => ms
+        elif queue_size > 0:                                        # (Throughput = 0) && (Queue > 0) ==> Infinite Delay
+            est_delay=''
+        return est_delay
 
     # COMPUTE MARKING PROBABILITY 
     def compute_mark_prob(self,queue_delay):
         proba = 0
-        if queue_delay > MAX_THRESH_DELAYS: proba = 100
+        if queue_delay == '' or queue_delay > MAX_THRESH_DELAYS: proba = 100
         elif queue_delay > MIN_THRESH_DELAYS: proba = (queue_delay - MIN_THRESH_DELAYS) * 100 / (MAX_THRESH_DELAYS - MIN_THRESH_DELAYS)
         return proba
 
@@ -94,13 +112,10 @@ class Get_Metrics(xAppBase):
         # RETRIEVE 
         queue_size  = meas_data["measData"][QUE_SIZE][0] # bytes
         avg_through = meas_data["measData"][AVG_THROUGH][0] # kbps
-        # COMPUTE 
-        if avg_through>0: 
-            est_delay   = float(queue_size * 8) / avg_through # bits / kbps => ms
-            mark_proba  = self.compute_mark_prob(est_delay)
-        else:
-            est_delay   = ""
-            mark_proba  = 100
+        # COMPUTE DELAY
+        est_delay = self.compute_queue_delay(queue_size,avg_through)
+        # COMPUTE PROBA
+        mark_proba  = self.compute_mark_prob(est_delay)
         # SEND
         ue_id   = 0
         drb_id  = 1
@@ -111,7 +126,6 @@ class Get_Metrics(xAppBase):
         self.display[ue_id].append((timestamp,"DRB.MarkProba",[mark_proba]))
         # SAVE GENERAL METRICS
         for metric_name, value in meas_data["measData"].items():
-            # print("%s = "%(metric_name),value)
             self.display[ue_id].append((timestamp,metric_name,value))
 
 
@@ -120,21 +134,17 @@ class Get_Metrics(xAppBase):
         drb_id = 1
         
         # HANDLE L4S SIGNALS 
-        for ue_id in L4S:
+        for ue_id in self.l4s_ues:
             # RETRIEVE 
             queue_size  = meas_data["ueMeasData"][ue_id]["measData"][QUE_SIZE][0]
             avg_through = meas_data["ueMeasData"][ue_id]["measData"][AVG_THROUGH][0]
-            # COMPUTE 
-            if avg_through>0: 
-                est_delay   = float(queue_size * 8) / avg_through # bits / kbps => ms
-                mark_proba = self.compute_mark_prob(est_delay)
-            else:
-                est_delay   = ""
-                mark_proba  = 100
+            # COMPUTE DELAY
+            est_delay = self.compute_queue_delay(queue_size,avg_through)
+            # COMPUTE
+            mark_proba = self.compute_mark_prob(est_delay)
             # SAVE L4S SPECIFIC METRICS (COMPUTED)
             self.display[ue_id].append((timestamp,"DRB.ComputedDelay",[est_delay]))
             self.display[ue_id].append((timestamp,"DRB.MarkProba",[mark_proba]))  
-            #print("[!] L4S QUEUE DELAY = %f ms / MARK PROB = %d "%(est_delay,mark_proba))
             # SEND
             drb_id  = 1
             self.qu_output.put((ue_id,drb_id,mark_proba))
@@ -142,16 +152,7 @@ class Get_Metrics(xAppBase):
         # SAVE GENERAL METRICS
         for ue_id, ue_meas_data in meas_data["ueMeasData"].items():
             for metric_name, value in ue_meas_data["measData"].items():
-                # print("%s = "%(metric_name),value)
                 self.display[ue_id].append((timestamp,metric_name,value))
-            # # ADD QUEUE DELAY VALUE
-            # queue_size  = meas_data["ueMeasData"][ue_id]["measData"][QUE_SIZE][0]
-            # avg_through = meas_data["ueMeasData"][ue_id]["measData"][AVG_THROUGH][0]
-            # if avg_through > 0:
-            #     est_delay   = float(queue_size * 8) / avg_through # bits / kbps => ms
-            # else:
-            #     est_delay   = ""
-            # self.display[ue_id].append((timestamp,"DRB.ComputedDelay",est_delay))  
     
 
     ################################ HANDLES INCOMING REPORT ################################
@@ -208,9 +209,9 @@ class Get_Metrics(xAppBase):
     @xAppBase.start_function
     def start(self):
         # Subscription for L4S
-        self.subscribe_to(DU_NODE_ID,L4S+NL4S,DU_METRICS)
+        self.subscribe_to(DU_NODE_ID, self.l4s_ues + self.oth_ues ,DU_METRICS)
         # Other metric from CU 
-        #self.subscribe_to(CU_NODE_ID,L4S+NL4S,CU_METRICS)
+        #self.subscribe_to(CU_NODE_ID,self.l4s_ues + self.oth_ues,CU_METRICS)
 
 
 
@@ -227,12 +228,14 @@ class Get_Metrics(xAppBase):
         # STOPS MARKING
         drb_id = 1
         mark_prob = 0
-        for ue_id in L4S:
+        for ue_id in self.l4s_ues:
             self.qu_output.put((ue_id,drb_id,mark_prob))
         
         # DISPLAY STATS
         for ue_id,data in self.display.items():
             print("Handling UE %s"%ue_id)
+            if not os.path.isdir('./Data/'):
+                os.mkdir('Data/')
             csvfile = open("Data/ue_%s.csv"%ue_id,'w')
             metrics_writer = csv.writer(csvfile, delimiter=',')
             # Format (timestamp, metric, values)
@@ -262,22 +265,30 @@ def control_thread(qu_input,sender,stop):
 
 # MAIN FUNCTION 
 if __name__ == '__main__':
+    # DISTINGUISH BETWEEN UEs
+    parser  = argparse.ArgumentParser(description='My example xApp')
+    parser.add_argument("--l4s_ue_id", nargs='*',type=int, default=0, help="L4S UE ID")
+    parser.add_argument("--ue_id", nargs='*',type=int, default=0, help="UE ID")
+    args    = parser.parse_args()
+    L4S     = [] if not args.l4s_ue_id else args.l4s_ue_id
+    NL4S    = [] if not args.ue_id else args.ue_id
+
 
     # CONSTANT VALUES
-    http_server_port = 8092
-    rmr_port = 4562
-    ran_func_id_kpm = 2
-    ran_func_id_rc = 3
+    http_server_port    = 8092
+    rmr_port            = 4562
+    ran_func_id_kpm     = 2
+    ran_func_id_rc      = 3
 
 
     # THREAD COMMUNICATION
-    stop_threads = Event()
-    queue_control = queue.Queue()
+    stop_threads    = Event()
+    queue_control   = queue.Queue()
     # MAIN THREAD: READ METRICS
     print("[!] Main Thread: starting reading KPM Metrics")
-    myXapp = Get_Metrics('', http_server_port, rmr_port,queue_control,stop_threads)
-    myXapp.e2sm_kpm.set_ran_func_id(ran_func_id_kpm) # KPM
-    myXapp.e2sm_rc.set_ran_func_id(ran_func_id_rc) # RC
+    myXapp = Get_Metrics('', (NL4S,L4S), http_server_port, rmr_port,queue_control,stop_threads)
+    myXapp.e2sm_kpm.set_ran_func_id(ran_func_id_kpm)    # KPM
+    myXapp.e2sm_rc.set_ran_func_id(ran_func_id_rc)      # RC
     # LAUNCHES CONTROL THREAD
     print("[!] Launching 'control' thread")
     control_thread(queue_control,myXapp.e2sm_rc,stop_threads)

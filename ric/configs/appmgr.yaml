@@ -16,7 +16,7 @@
   "tmpConfig": "/tmp/config-file.json"
 "db":
   "sessionNamespace": "XMSession"
-  "host": "10.10.5.12:6379"
+  "host": "10.0.2.12:6379"
   "prot": "tcp"
   "maxIdle": 80
   "maxActive": 12000
