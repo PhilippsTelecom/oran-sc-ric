@@ -18,8 +18,8 @@ import queue
 
 # RELATED TO METRICS
     # (i) METRICS ON LAST WINDOW
-QUE_SIZE    = 'DRB.RlcStateDL'
-AVG_THROUGH = 'DRB.MacGrantThpDl'
+QUE_SIZE    = 'DRB.RlcStateDL'      # Size on last Window (cf rlc_report_period)
+AVG_THROUGH = 'DRB.MacGrantThpDl'   # Throughput on last Window (granted bytes)
 LST_METRICS = [QUE_SIZE,AVG_THROUGH,'DRB.RlcSduLastDelayDl','DRB.LastUEThpDl'] # Computed over last window (10 ms)
     # (ii) METRICS ON SEVERAL WINDOWS 
 AVG_METRICS = ['DRB.UEThpDl','DRB.RlcSduTransmittedVolumeDL']
@@ -32,9 +32,9 @@ MIN_THRESH_DELAYS = 5
 MAX_THRESH_DELAYS = 10
 
 # CONNECT TO E2 NODE (wget 10.0.2.13:8080/ric/v1/get_all_e2nodes)
-DU_NODE_ID = "gnbd_001_001_00019b_0" # "gnbd_001_001_00019b_0"
+DU_NODE_ID = "gnbd_001_001_00019b_1" # "gnbd_001_001_00019b_0"
 CU_NODE_ID = "gnb_001_001_00019b" # "gnb_001_001_00019b"  
-
+KPM_PERIOD = 10 # 10 ms => 100 reports per second
 
 
 
@@ -83,6 +83,7 @@ class Get_Metrics(xAppBase):
         self.FirstReport    = 0
         self.LastReport     = 0
         self.Handled        = 0
+        self.InterArrivals  = []
         # TO PRINT
         self.display        = {}
         [self.display.setdefault(i,[]) for i in self.l4s_ues  + self.oth_ues]
@@ -103,7 +104,7 @@ class Get_Metrics(xAppBase):
     def compute_mark_prob(self,queue_delay):
         proba = 0
         if queue_delay == '' or queue_delay > MAX_THRESH_DELAYS: proba = 100
-        elif queue_delay > MIN_THRESH_DELAYS: proba = (queue_delay - MIN_THRESH_DELAYS) * 100 / (MAX_THRESH_DELAYS - MIN_THRESH_DELAYS)
+        elif queue_delay > MIN_THRESH_DELAYS: proba = int((queue_delay - MIN_THRESH_DELAYS) * 100 / (MAX_THRESH_DELAYS - MIN_THRESH_DELAYS))
         return proba
 
 
@@ -165,6 +166,8 @@ class Get_Metrics(xAppBase):
 
         # RELATED TO PERS
         if self.FirstReport == 0: self.FirstReport=timestamp # Init
+        # BUNDLING
+        else: self.InterArrivals.append(timestamp - self.LastReport)
         self.LastReport     = timestamp
         self.Handled        = self.Handled + 1 # Increment
 
@@ -188,8 +191,8 @@ class Get_Metrics(xAppBase):
     # SUBSCRIBES TO METRICS `metrics` OF NODE `e2_node_id` FOR ALL UES `ue_ids`
     def subscribe_to(self,e2_node_id,ue_ids,metrics):
         # Fixed
-        report_period = 50 # 1000 by default
-        granul_period = 50 # 1000 by default
+        report_period = KPM_PERIOD # 1000 by default
+        granul_period = KPM_PERIOD # 1000 by default
         
         if(len(ue_ids)==1):
             Service_Style = 2
@@ -224,6 +227,8 @@ class Get_Metrics(xAppBase):
         last = self.LastReport-self.FirstReport
         print("[!] Handled %d reports in %f "%(self.Handled,last))
         if last > 0 : print("[!] This represents %f reports per second."%(self.Handled / last))
+        # BUNDLING 
+        print("[!] Related to bundling: mean IAT ~ %f / var IAT ~ %f / min IAT = %f / max IAT = %f "%(np.mean(self.InterArrivals),np.var(self.InterArrivals),np.min(self.InterArrivals),np.max(self.InterArrivals)))
         
         # STOPS MARKING
         drb_id = 1

@@ -50,6 +50,9 @@ class xAppBase(object):
         while rmr.rmr_ready(self.rmr_client) == 0:
             time.sleep(1)
 
+        # PHILIPPE: SET LOW LATENCY MODE
+        rmr.rmr_set_low_latency(self.rmr_client)
+
         rmr.rmr_set_stimeout(self.rmr_client, 1)
         self.rmr_sbuf = rmr.rmr_alloc_msg(self.rmr_client, 2000)
         time.sleep(0.1)

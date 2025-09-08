@@ -64,6 +64,9 @@ RUN chmod +x /opt/e2/rmr_probe
 RUN pip install joblib keras==2.13.1 numpy tensorflow==2.13.1 scikit-learn pandas onnxruntime
 # uninstalled numpy keras
 
+# Install iproute2 (Limit MTU)
+#RUN apt-get install -y iproute2
+
 WORKDIR /opt/xApps
 
 CMD ["/bin/bash"]

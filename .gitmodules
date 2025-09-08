@@ -1,0 +1,3 @@
+[submodule "ric/images/ric-e2-term"]
+	path = ric/images/ric-e2-term
+	url = https://github.com/o-ran-sc/ric-plt-e2.git
