@@ -73,6 +73,10 @@ services:
     hostname: e2term
     #image: nexus3.o-ran-sc.org:10002/o-ran-sc/ric-plt-e2:${E2TERM_VER}
     image: ric-plt-e2:${E2TERM_VER}
+    # To add delays on both interfaces
+    privileged: true
+    cap_add:
+      - NET_ADMIN
     build:
       context: ./ric/images/ric-e2-term/RIC-E2-TERMINATION
       dockerfile: ./Dockerfile

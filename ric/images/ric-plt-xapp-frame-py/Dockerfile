@@ -20,7 +20,8 @@ RUN wget --content-disposition ${E2AP_LIB_URL} && dpkg -i riclibe2ap_${E2AP_VERS
 RUN wget --content-disposition ${E2AP_DEV_URL} && dpkg -i riclibe2ap-dev_${E2AP_VERSION}_amd64.deb
 RUN rm -f riclibe2ap_${E2AP_VERSION}_amd64.deb riclibe2ap-dev_${E2AP_VERSION}_amd64.deb
 
-FROM python:3.8-slim
+FROM python:3.8
+#-slim
 
 RUN apt-get clean -y && apt-get update -y && \
     apt-get install -y git wget curl less nano
@@ -61,8 +62,8 @@ RUN chmod +x /opt/e2/rmr_probe
 
 
 # Install libs for ML
-RUN pip install joblib keras==2.13.1 numpy tensorflow==2.13.1 scikit-learn pandas onnxruntime
-# uninstalled numpy keras
+RUN pip install lightgbm==4.6.0 numpy==1.24.4 scikit-learn==1.3.2 pandas
+#onnxruntime
 
 # Install iproute2 (Limit MTU)
 #RUN apt-get install -y iproute2
