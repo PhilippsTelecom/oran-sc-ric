@@ -5,11 +5,13 @@ import signal
 import time
 import numpy as np
 from itertools import chain
+import csv
+import os
 
 # SubModules
 import Data_Preparation
 import Predictor
-#import Controller
+import Controller
 
 # THREADING
 from threading import Thread, Event
@@ -17,19 +19,19 @@ import queue
 
 
 # METRIC CATEGORIES
-MISC_METRICS    = [
-    'CQI','RSRP','RSRQ','RACH.PreambleDedCell'] # 4 
-RRU_METRICS     = [
+DRB_METRICS = [
+    'DRB.RlcSduLastDelayDl', 'DRB.UEThpDl','DRB.RlcPacketDropRateDl','DRB.RlcSduTransmittedVolumeDL','DRB.RlcStateDL',
+    'DRB.RlcDelayUl','DRB.UEThpUl','DRB.RlcSduTransmittedVolumeUL'] # 8 
+RRU_METRICS = [
     'RRU.PrbAvailDl','RRU.PrbUsedDl','RRU.PrbTotDl',
     'RRU.PrbAvailUl','RRU.PrbUsedUl','RRU.PrbTotUl'] # 6
-DRB_METRICS     = [
-    'DRB.RlcSduDelayDl', 'DRB.RlcSduLastDelayDl', 'DRB.UEThpDl','DRB.RlcPacketDropRateDl','DRB.RlcSduTransmittedVolumeDL',
-    'DRB.RlcDelayUl','DRB.UEThpUl','DRB.AirIfDelayUl','DRB.RlcSduTransmittedVolumeUL'] # 9 
-CU_METRIC = ['DRB.PdcpTxBytes']
+MISC_METRICS = [
+    'CQI','RSRP','RSRQ','RACH.PreambleDedCell'] # 4
+CU_METRIC = ['DRB.PdcpTxBytes'] # 1
 ALL_METRICS     = DRB_METRICS + RRU_METRICS + MISC_METRICS 
-METRICS_L4S     = ALL_METRICS
-METRICS_AGG     = ALL_METRICS
-WINDOW          = 10 # context used fto do prediction 
+METRICS_L4S     = ['DRB.RlcSduLastDelayDl','CQI']
+METRICS_AGG     = ['DRB.RlcSduLastDelayDl']
+WINDOW          = 10 # context used to do prediction 
 
 
 # CONNECT TO E2 NODE (wget 10.10.5.13:8080/ric/v1/get_all_e2nodes)
@@ -41,7 +43,7 @@ CU_NODE_ID = "gnb_001_001_00019b"
 CONF = { 1: [0,1,2]
 }
 L4S     = [0]                                                       # L4S UEs
-NL4S    = list(set(chain.from_iterable(CONF.values())) - set(L4S)) # Non-L4S UEs
+NL4S    = list(set(chain.from_iterable(CONF.values())) - set(L4S))  # Non-L4S UEs
 AGGS    = CONF.keys()
 
 
@@ -53,29 +55,35 @@ AGGS    = CONF.keys()
 
 
 class Get_Metrics(xAppBase):
-    def __init__(self, config, http_server_port, rmr_port, dat_output, stop_threads):
+    def __init__(self, config,http_server_port, rmr_port, dat_output, stop_threads):
         super(Get_Metrics, self).__init__(config, http_server_port, rmr_port)
         # HANDLING DATA
-        self.PreProc    = Data_Preparation.Pre_Process((L4S,METRICS_L4S),(NL4S,METRICS_AGG))    # Data Cleaning
-        self.Arrange    = Data_Preparation.Arrange_Data((L4S,METRICS_L4S),(CONF,METRICS_AGG))   # Aggregates UEs
-        self.Smooth     = Data_Preparation.Smooth(10,(L4S,METRICS_L4S),(AGGS,METRICS_AGG))      # Data Smoothing
+        self.PreProc        = Data_Preparation.Pre_Process((L4S,METRICS_L4S),(NL4S,METRICS_AGG))    # Data Cleaning
+        self.Arrange        = Data_Preparation.Arrange_Data((L4S,METRICS_L4S),(CONF,METRICS_AGG))   # Aggregates UEs
+        self.Smooth         = Data_Preparation.Smooth(10,(L4S,METRICS_L4S),(AGGS,METRICS_AGG))      # Data Smoothing
         # SAVING TEMPORAL WINDOW
-        self.l4s_wind   = {key: (np.zeros((WINDOW,len(METRICS_L4S))),0,False) for key in L4S}
-        self.agg_wind   = {key: (np.zeros((WINDOW,len(METRICS_AGG)*3)),0,False) for key in AGGS}
+        self.l4s_wind       = {key: (np.zeros((WINDOW,len(METRICS_L4S))),0,False) for key in L4S}
+        self.agg_wind       = {key: (np.zeros((WINDOW,len(METRICS_AGG)*3)),0,False) for key in AGGS}
         # THREAD RELATED
         self.stop_control   = stop_threads
         self.qu_output      = dat_output
         # RELATED TO PERFS
+        self.times          = []
         self.nbReports      = 0 
         self.datFrstReport  = 0
         self.datLastReport  = 0
+        # RELATED TO GRAPHS
+        self.display        = {}
+        [self.display.setdefault(i,[]) for i in L4S + NL4S]
+
 
 
     ################################ HANDLES INCOMING REPORT ################################
 
 
     # HANDLE REPORT STYLE =2 (ONE UE - WE SUPPOSE IT IS L4S)
-    def report_for_one_ue(self,meas_data):
+    def report_for_one_ue(self,meas_data,time_related:tuple):
+        print("[!]\tThere is only one UE, this xApp won't do anything")
         pass
         
 
@@ -139,7 +147,7 @@ class Get_Metrics(xAppBase):
         return X_AGG
 
 
-    def browse_l4s_drbs(self,agg_metrics):
+    def browse_l4s_drbs(self,agg_metrics,tim_received):
         """
             This method triggers a prediction for each L4S DRB having full window
             'Index' is the place where to insert the next report (contains the oldest report)
@@ -152,41 +160,50 @@ class Get_Metrics(xAppBase):
                 l4s_drb[(WINDOW-index):,:] = arr[:index]
                 # Send prediction to prediction Thread
                 drb_id = 1
-                self.qu_output.put((l4s,drb_id,l4s_drb.copy(),agg_metrics.copy()))
+                self.qu_output.put((tim_received,CU_NODE_ID,l4s,drb_id,l4s_drb.copy(),agg_metrics.copy()))
+
+
+    def save_metrics_plot(self,meas_data:dict,timestamp):
+        for ue_id, ue_meas_data in meas_data["ueMeasData"].items():
+            for metric_name, value in ue_meas_data["measData"].items():
+                self.display[ue_id].append((timestamp,metric_name,value))
 
 
     # HANDLE REPORT STYLE =5 (SEVERAL UEs)
-    def report_for_several_ues(self,meas_data):
+    def report_for_several_ues(self,meas_data,time_related:tuple):
         """
             Handles a KPM report related to several UEs (>1)
         """
+        tim_Header,tim_Received = time_related
 
         # (I) HANDLE 'NANS' AND 'INFS' (PRE-PROCESSING)
         meas_data   = self.PreProc.handle_nans(meas_data)
         meas_data   = self.PreProc.handle_infs(meas_data)
-        self.PreProc.update_last_values(meas_data) 
+        self.PreProc.update_last_values(meas_data)
 
-        # (II) ARRANGE VALUES: AGGREGATION + REGROUP L4S FEATS (at time 't')
+        # (II) SAVE DATA TO PLOT
+        self.save_metrics_plot(meas_data,tim_Header)
+
+        # (III) ARRANGE VALUES: AGGREGATION + REGROUP L4S FEATS (at time 't')
         X_l4s = self.Arrange.handle_l4s(meas_data)
         X_agg = self.Arrange.handle_aggregators(meas_data)
 
-        # (III) SMOOTH VALUES
+        # (IV) SMOOTH VALUES
         X_l4s = self.Smooth.moving_average_l4s(X_l4s)
         X_agg = self.Smooth.moving_average_agg(X_agg)
-        
-        # (IV) INFERENCE (one prediction per L4S DRB)
+
+        # (V) INFERENCE (one prediction per L4S DRB)
         all_agg_full_window = self.save_new_samples(X_l4s,X_agg)
         if all_agg_full_window:
-            X_AGG = self.retrieve_window_aggs() # All data for aggregators
-            self.browse_l4s_drbs(X_AGG)         # Trigers predictions
+            X_AGG = self.retrieve_window_aggs()         # All data for aggregators
+            self.browse_l4s_drbs(X_AGG,tim_Received)    # Triggers predictions
 
 
     ################################ SUBSCRIBES TO ################################
 
 
     # JUST TO KNOW PERFORMANCES
-    def performances(self):
-        timestamp = time.time()
+    def performances(self,timestamp):
         # INIT
         if self.nbReports == 0:
             self.datFrstReport = timestamp
@@ -198,19 +215,27 @@ class Get_Metrics(xAppBase):
     # CALLED WHEN RECEIVING A RIC INDICATION MSG 
     def my_subscription_callback(self, e2_agent_id, subscription_id, indication_hdr, indication_msg, kpm_report_style, ue_id):
         # Assess perfs
-        self.performances()
+        start = time.time()
+        self.performances(start)
 
         # Retrieves header + data
-        meas_data = self.e2sm_kpm.extract_meas_data(indication_msg)
+        meas_data       = self.e2sm_kpm.extract_meas_data(indication_msg)
+        indication_hdr  = self.e2sm_kpm.extract_hdr_info(indication_hdr)
+        timestamp       = indication_hdr['colletStartTime']
+        #print(timestamp)
 
         # METRICS FOR ONE DRB / NO NEED TO AGGREGATE
         if kpm_report_style == 2:
             print("[!] Only one UE, the xApp won't do anything ")
-            self.report_for_one_ue(meas_data)
+            self.report_for_one_ue(meas_data,(timestamp,start))
             
         # METRICS FOR SEVERAL DRBs
         if kpm_report_style in [3,4,5]:
-            self.report_for_several_ues(meas_data)
+            self.report_for_several_ues(meas_data,(timestamp,start))
+
+        # CF PROCESSING DELAY
+        end = time.time()
+        self.times.append(end - start)
 
 
     # SUBSCRIBES TO METRICS `metrics` OF NODE `e2_node_id` FOR ALL UES `ue_ids`
@@ -249,11 +274,28 @@ class Get_Metrics(xAppBase):
     # Unsuscribes
     def signal_handler(self, sig, frame):
         length = self.datLastReport - self.datFrstReport
-        print("[!] Time between 1st and last reports = %f, total reports = %d, mean reports per second = %f"%(length,self.nbReports,self.nbReports/length))
+        print("[!]\t[L4S_Pred]: Time between 1st and last reports = %f, total reports = %d, mean reports per second = %f"%(length,self.nbReports,self.nbReports/length))
+        
+        # SAVE STATS
+        for ue_id,data in self.display.items():
+            print("Handling UE %s"%ue_id)
+            if not os.path.isdir('./Data/'):
+                os.mkdir('Data/')
+            csvfile = open("Data/ue_%s.csv"%ue_id,'w')
+            metrics_writer = csv.writer(csvfile, delimiter=',')
+            # Format (timestamp, metric, values)
+            for metrics in data:
+                metrics_writer.writerow([metrics[0],metrics[1],metrics[2][0]]) # Usually the value is in a list `[]`
+            csvfile.close()
+
+        # SHOW PROCESSING TIME
+        if len(self.times) > 0:
+            print("[!]\t[Main]: Handled %d E2SM-KPM reports"%len(self.times))
+            print("[!]\t[Main]: Mean processing time (pre-processing + aggregation) ~= %f"%(sum(self.times)/len(self.times)))
+
+        # Unsuscribe
         self.stop_control.set()
         super().stop()
-
-
 
 
 ################################ LANCHES THREADS ################################
@@ -266,17 +308,17 @@ def prediction_threads(thread_related:tuple,prediction_related:tuple):
             - thread_related: queue to communicate + event to stop all threads
             - prediction_related: path to model + scaler (to load) + index metric to predict
     """
-    NB_THREADS=2
+    NB_THREADS=1
     
     print("[!] Launching %d threads to predict "%NB_THREADS)
     for i in range(NB_THREADS):
-        instance = Predictor.LightGBM(thread_related,prediction_related) # Class Instance
-        thread = Thread(target=instance.Start)                  # Thread
+        instance = Predictor.LightGBM(thread_related,prediction_related)    # Class Instance
+        thread = Thread(target=instance.Start)                              # Thread
         thread.start()
 
 
-def control_thread(qu_input,sender,stop):
-    controller = Controller.Controller(qu_input,sender,stop)    # Class Instance
+def control_thread(thread_related:tuple,sender):
+    controller = Controller.Controller(thread_related,sender)   # Class Instance
     control = Thread(target=controller.Start)                   # Thread
     control.start()
 
@@ -307,14 +349,14 @@ if __name__ == '__main__':
     # MAIN THREAD: READ METRICS
     print("[!] Main Thread: starting reading KPM Metrics")
     myXapp = Get_Metrics('', http_server_port, rmr_port,queue_predict,stop_threads)
-    myXapp.e2sm_kpm.set_ran_func_id(ran_func_id_kpm) # KPM
-    myXapp.e2sm_rc.set_ran_func_id(ran_func_id_rc) # RC
+    myXapp.e2sm_kpm.set_ran_func_id(ran_func_id_kpm)    # KPM
+    myXapp.e2sm_rc.set_ran_func_id(ran_func_id_rc)      # RC
     # LAUNCHES PREDICTION THREADS
     print("[!] Launching 'predicting' threads")
     prediction_threads((queue_predict,queue_control,stop_threads),(path_trained_model,path_trained_scaler,ind_to_pred))
     # LAUNCHES CONTROL THREAD
     print("[!] Launching 'control' thread")
-    # control_thread(queue_control,myXapp.e2sm_rc,stop_threads)
+    control_thread((queue_control,stop_threads),myXapp.e2sm_rc)
 
 
     # EXIT SIGNALS

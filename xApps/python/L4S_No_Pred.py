@@ -18,22 +18,29 @@ import queue
 
 # RELATED TO METRICS
     # (i) METRICS ON LAST WINDOW
-QUE_SIZE    = 'DRB.RlcStateDL'      # Size on last Window (cf rlc_report_period)
-AVG_THROUGH = 'DRB.MacGrantThpDl'   # Throughput on last Window (granted bytes)
-LST_METRICS = [QUE_SIZE,AVG_THROUGH,'DRB.RlcSduLastDelayDl','DRB.LastUEThpDl'] # Computed over last window (10 ms)
+QUE_DEL     = 'DRB.RlcSduLastDelayDl'
+# LST_METRICS = [QUE_SIZE,AVG_THROUGH,'DRB.RlcSduLastDelayDl','DRB.LastUEThpDl'] # Computed over last window (10 ms)
     # (ii) METRICS ON SEVERAL WINDOWS 
-AVG_METRICS = ['DRB.UEThpDl','DRB.RlcSduTransmittedVolumeDL']
+# AVG_METRICS = ['DRB.UEThpDl','DRB.RlcSduTransmittedVolumeDL']
     # (iii) FINAL METRICS
-DU_METRICS  = ['RRU.PrbAvailDl','RRU.PrbUsedDl'] + LST_METRICS + AVG_METRICS 
-CU_METRICS  = ['DRB.PdcpTxBytes']
+# DU_METRICS  = ['RRU.PrbAvailDl','RRU.PrbUsedDl'] + LST_METRICS + AVG_METRICS 
+
+
+DU_METRICS = ['CQI','RSRP','RSRQ','RACH.PreambleDedCell'] + [
+    'RRU.PrbAvailDl','RRU.PrbUsedDl','RRU.PrbTotDl',
+    'RRU.PrbAvailUl','RRU.PrbUsedUl','RRU.PrbTotUl'] + [ 
+    'DRB.RlcSduLastDelayDl', 'DRB.UEThpDl','DRB.RlcPacketDropRateDl','DRB.RlcSduTransmittedVolumeDL','DRB.RlcStateDL',
+    'DRB.RlcDelayUl','DRB.UEThpUl','DRB.RlcSduTransmittedVolumeUL'] # EVERYTHING (USED FOR TRAINING)
+
 
 # L4S THRESHOLDS (SAME AS IN DU)
 MIN_THRESH_DELAYS = 5
 MAX_THRESH_DELAYS = 10
 
 # CONNECT TO E2 NODE (wget 10.0.2.13:8080/ric/v1/get_all_e2nodes)
-DU_NODE_ID = "gnbd_001_001_00019b_1" # "gnbd_001_001_00019b_0"
 CU_NODE_ID = "gnb_001_001_00019b" # "gnb_001_001_00019b"  
+DU_NODE_ID = "gnbd_001_001_00019b_1" # "gnbd_001_001_00019b_0"
+#DU_NODE_ID = "gnbd_001_001_00019b_0" # "gnbd_001_001_00019b_0"
 KPM_PERIOD = 10 # 10 ms => 100 reports per second
 
 
@@ -60,6 +67,7 @@ class Controller():
                 ue_id, drb_id, mark_prob = self.input.get(timeout=1)
                 self.sender.control_drb_qos(CU_NODE_ID, ue_id,drb_id,mark_prob,ack_request=1)
             except Exception as e:
+                print(f"Exception occurred (problem): {e}")
                 continue
 
 
@@ -84,6 +92,9 @@ class Get_Metrics(xAppBase):
         self.LastReport     = 0
         self.Handled        = 0
         self.InterArrivals  = []
+        # RELATED TO MARKING
+        self.alpha          = 0.8
+        self.MarkProba      = 0
         # TO PRINT
         self.display        = {}
         [self.display.setdefault(i,[]) for i in self.l4s_ues  + self.oth_ues]
@@ -100,30 +111,37 @@ class Get_Metrics(xAppBase):
             est_delay=''
         return est_delay
 
+
     # COMPUTE MARKING PROBABILITY 
     def compute_mark_prob(self,queue_delay):
-        proba = 0
-        if queue_delay == '' or queue_delay > MAX_THRESH_DELAYS: proba = 100
-        elif queue_delay > MIN_THRESH_DELAYS: proba = int((queue_delay - MIN_THRESH_DELAYS) * 100 / (MAX_THRESH_DELAYS - MIN_THRESH_DELAYS))
-        return proba
+        """
+            Computes the marking probability as specified in our Paper
+                - proba_tmp is the marking probability according to the last known delay
+                - self.MarkProba is a weighted average (alpha = 0.8) gives 80% importance to last measure
+        """
+        # Proba related to current queue delay
+        proba_tmp = 0
+        if queue_delay is not None:
+            if queue_delay > MAX_THRESH_DELAYS: proba_tmp = 100 # queue_delay == '' or 
+            elif queue_delay > MIN_THRESH_DELAYS: proba_tmp = int((queue_delay - MIN_THRESH_DELAYS) * 100 / (MAX_THRESH_DELAYS - MIN_THRESH_DELAYS))
+        
+        # Weighted average
+        self.MarkProba = int(self.alpha * proba_tmp + (1-self.alpha) * self.MarkProba)
+        
+        return self.MarkProba
 
 
     # HANDLE REPORT STYLE =2 (ONE UE)
     def report_for_one_ue(self,meas_data,timestamp):
-        # RETRIEVE 
-        queue_size  = meas_data["measData"][QUE_SIZE][0] # bytes
-        avg_through = meas_data["measData"][AVG_THROUGH][0] # kbps
-        # COMPUTE DELAY
-        est_delay = self.compute_queue_delay(queue_size,avg_through)
         # COMPUTE PROBA
-        mark_proba  = self.compute_mark_prob(est_delay)
+        queue_delay = meas_data["measData"][QUE_DEL][0]
+        mark_proba  = self.compute_mark_prob(queue_delay)
         # SEND
         ue_id   = 0
         drb_id  = 1
         self.qu_output.put((ue_id,drb_id,mark_proba))
         
         # SAVE L4S SPECIFIC METRICS (COMPUTED)
-        self.display[ue_id].append((timestamp,"DRB.ComputedDelay",[est_delay]))
         self.display[ue_id].append((timestamp,"DRB.MarkProba",[mark_proba]))
         # SAVE GENERAL METRICS
         for metric_name, value in meas_data["measData"].items():
@@ -136,15 +154,10 @@ class Get_Metrics(xAppBase):
         
         # HANDLE L4S SIGNALS 
         for ue_id in self.l4s_ues:
-            # RETRIEVE 
-            queue_size  = meas_data["ueMeasData"][ue_id]["measData"][QUE_SIZE][0]
-            avg_through = meas_data["ueMeasData"][ue_id]["measData"][AVG_THROUGH][0]
-            # COMPUTE DELAY
-            est_delay = self.compute_queue_delay(queue_size,avg_through)
             # COMPUTE
-            mark_proba = self.compute_mark_prob(est_delay)
+            queue_delay = meas_data["ueMeasData"][ue_id]["measData"][QUE_DEL][0]
+            mark_proba = self.compute_mark_prob(queue_delay)
             # SAVE L4S SPECIFIC METRICS (COMPUTED)
-            self.display[ue_id].append((timestamp,"DRB.ComputedDelay",[est_delay]))
             self.display[ue_id].append((timestamp,"DRB.MarkProba",[mark_proba]))  
             # SEND
             drb_id  = 1

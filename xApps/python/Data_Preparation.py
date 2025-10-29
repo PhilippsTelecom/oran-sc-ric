@@ -28,7 +28,7 @@ class Pre_Process():
     def get_last_value(self,metric_:tuple,context_:tuple):
         """
             Retrieves the last known value for a given metric
-            Returns 0 y default
+            Returns 0 by default
         """
         # Retrieve Data
         metric, list_metric = metric_
