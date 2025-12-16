@@ -3,8 +3,6 @@ import time
 
 
 ALPHA               = 0.8
-MIN_THRESH_DELAYS   =5
-MAX_THRESH_DELAYS   =10
 
 
 class Controller():
@@ -14,9 +12,11 @@ class Controller():
     """
 
 
-    def __init__(self,thread_related:tuple,e2sm_rc_):
+    def __init__(self,thread_related:tuple,l4s_thresh:tuple,e2sm_rc_):
         self.input, self.stop   = thread_related 
         self.sender             = e2sm_rc_
+        self.l4s_thr_min        = l4s_thresh[0]*1000
+        self.l4s_thr_max        = l4s_thresh[1]*1000
         self.MarkProba          = 0
         self.times              = []    # Time between E2SM-KPM and E2SM-RC
         self.global_times       = []    # Check if sending is the problem 
@@ -36,10 +36,10 @@ class Controller():
                     break
                 try:
                     # RETRIEVE VALUES
-                    tim_received, cu_id, ue_id, drb_id, pred_delay  = self.input.get(timeout=1)
+                    tim_received, cu_id, ue_id, drb_id, delay  = self.input.get(timeout=1)
                     start = time.time()
                     
-                    mark_prob                                       = self.compute_mark_prob(pred_delay)
+                    mark_prob                                       = self.compute_mark_prob(delay)
                     self.sender.control_drb_qos(cu_id, ue_id,drb_id,mark_prob,ack_request=1)
                     
                     end  = time.time()
@@ -59,8 +59,8 @@ class Controller():
         # Proba related to current queue delay
         proba_tmp = 0
         if queue_delay is not None:
-            if queue_delay > MAX_THRESH_DELAYS: proba_tmp = 100 # queue_delay == '' or 
-            elif queue_delay > MIN_THRESH_DELAYS: proba_tmp = int((queue_delay - MIN_THRESH_DELAYS) * 100 / (MAX_THRESH_DELAYS - MIN_THRESH_DELAYS))
+            if queue_delay > l4s_thr_max: proba_tmp = 100 # queue_delay == '' or 
+            elif queue_delay > self.l4s_thr_min: proba_tmp = int((queue_delay - self.l4s_thr_min) * 100 / (l4s_thr_max - self.l4s_thr_min))
         
         # Weighted average
         self.MarkProba = int(ALPHA * proba_tmp + (1-ALPHA) * self.MarkProba)

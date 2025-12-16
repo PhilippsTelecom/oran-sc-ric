@@ -78,7 +78,7 @@ services:
     cap_add:
       - NET_ADMIN
     build:
-      context: ./ric/images/ric-e2-term/RIC-E2-TERMINATION
+      context: ./ric/images/ric-plt-e2/RIC-E2-TERMINATION
       dockerfile: ./Dockerfile
     #Uncomment ports to use the RIC from outside the docker network.
     ports:
@@ -93,7 +93,7 @@ services:
       - print=1
       - RMR_SEED_RT=/opt/e2/dockerRouter.txt
       - RMR_SRC_ID=${E2TERM_IP}
-      - SCTP_NO_DELAY=1 # To limit delays before sending E2SM-RC
+      - SCTP_NO_DELAY=true # To limit delays before sending E2SM-RC
     command: ./e2 -p config -f config.conf
     volumes:
       - type: bind
