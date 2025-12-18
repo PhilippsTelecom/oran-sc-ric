@@ -40,8 +40,8 @@ class Get_Metrics(xAppBase):
         self.l4s_ues        = ues_index_
         self.kpm_period     = kpm_period_
         # THREAD RELATED
-        self.stop_control   = stop_threads
         self.qu_output      = dat_output
+        self.stop_control   = stop_threads
         # RELATED TO PERFS
         self.FirstReport    = 0
         self.LastReport     = 0
@@ -144,9 +144,10 @@ class Get_Metrics(xAppBase):
         # PERFS
         last = self.LastReport-self.FirstReport
         print("[!] Handled %d reports in %f "%(self.Handled,last))
-        if last > 0 : print("[!] This represents %f reports per second."%(self.Handled / last))
-        # BUNDLING 
-        print("[!] Related to bundling: mean IAT ~ %f / var IAT ~ %f / min IAT = %f / max IAT = %f "%(np.mean(self.InterArrivals),np.var(self.InterArrivals),np.min(self.InterArrivals),np.max(self.InterArrivals)))
+        if last > 0 : 
+            print("[!] This represents %f reports per second."%(self.Handled / last))
+            # BUNDLING 
+            print("[!] Related to bundling: mean IAT ~ %f / var IAT ~ %f / min IAT = %f / max IAT = %f "%(np.mean(self.InterArrivals),np.var(self.InterArrivals),np.min(self.InterArrivals),np.max(self.InterArrivals)))
         
         # STOPS MARKING
         drb_id  = 1
@@ -178,15 +179,15 @@ if __name__ == '__main__':
     parser  = argparse.ArgumentParser(description='Marking xApp _ PERIODICAL')
 
     parser.add_argument("--l4s_ue_id", nargs='*',type=int, default=0, help="L4S UE ID")
-    parser.add_argument("--l4s_min_thr", nargs='*',type=float, default=0, help="L4S minimum marking threshold")
-    parser.add_argument("--l4s_max_thr", nargs='*',type=float, default=0, help="L4S maximum marking threshold")
-    parser.add_argument("--kpm_period", nargs='*',type=int, default=10, help="KPM reporting period")
+    parser.add_argument("--l4s_min_thr",type=float, default=0.005, help="L4S minimum marking threshold")
+    parser.add_argument("--l4s_max_thr",type=float, default=0.010, help="L4S maximum marking threshold")
+    parser.add_argument("--kpm_period",type=float, default=0.010, help="KPM reporting period")
     
     args        = parser.parse_args()
     L4S         = [] if not args.l4s_ue_id else args.l4s_ue_id
-    KPM_period  = args.kpm_period
-    KPM_min_thr = args.l4s_min_thr
-    KPM_max_thr = args.l4s_max_thr
+    KPM_period  = int(args.kpm_period * 1000)
+    KPM_min_thr = int(args.l4s_min_thr * 1000)
+    KPM_max_thr = int(args.l4s_max_thr * 1000)
 
 
     # THREAD COMMUNICATION
